@@ -222,6 +222,7 @@ details.qa div { padding: 0 14px 12px; }
   <p class="eyebrow">First time · Install</p>
   <h1>Install everything on a new workstation</h1>
   <p class="lede">Go through the steps in order. Tick each one when its check passes; your ticks are remembered in this browser.</p>
+  <p class="note quest"><strong>Using a coding agent?</strong> Give it <code>AGENT_INSTALL.md</code> from the repository: <em>"Install robot_remote on this machine by following AGENT_INSTALL.md in https://github.com/Patrick-zhuyanxun/robot_remote"</em>. It runs the same steps and asks you to run the sudo parts.</p>
   <div class="progress" aria-hidden="true"><i id="installbar"></i></div>
   <div class="stepper" data-stepper="install">
     <ol class="steplist"></ol>
@@ -264,8 +265,8 @@ sudo rosdep init; rosdep update</code></pre><button type="button" data-copy="c-r
 
       <div class="step" data-step="Get the code">
         <h2>Get the robot_remote code</h2>
-        <p>The repository is private. Ask its owner for access, log in with <code>gh auth login</code>, then clone it. Any location works. <strong>All later commands are run from inside this folder</strong> (they start with <code>./</code>).</p>
-        <div class="copyrow"><pre><code id="c-clone">gh repo clone Patrick-zhuyanxun/robot_remote ~/robot_remote
+        <p>Clone the public repository. Any location works. <strong>All later commands are run from inside this folder</strong> (they start with <code>./</code>).</p>
+        <div class="copyrow"><pre><code id="c-clone">git clone https://github.com/Patrick-zhuyanxun/robot_remote.git ~/robot_remote
 cd ~/robot_remote</code></pre><button type="button" data-copy="c-clone">Copy</button></div>
         <p class="check">Pass: <code>ls</code> shows <code>launcher  quest_teleop  recording  setup  dual_arm_sim …</code></p>
       </div>
@@ -293,8 +294,9 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
 
       <div class="step" data-step="Quest environment">
         <h2>Create the Quest teleop environment</h2>
-        <p>Creates <code>.venv_quest</code>: Python 3.10 so it can import the system ROS 2 <code>rclpy</code>, plus NVIDIA Isaac Teleop with the CloudXR runtime. At the end it asks you to accept the CloudXR licence (once per machine).</p>
-        <div class="copyrow"><pre><code id="c-quest">./setup/install_quest_env.sh</code></pre><button type="button" data-copy="c-quest">Copy</button></div>
+        <p>Creates <code>.venv_quest</code>: Python 3.10 so it can import the system ROS 2 <code>rclpy</code>, plus NVIDIA Isaac Teleop with the CloudXR runtime. Then read and accept the CloudXR licence (once per machine).</p>
+        <div class="copyrow"><pre><code id="c-quest">./setup/install_quest_env.sh
+.venv_quest/bin/python -m isaacteleop.cloudxr --accept-eula</code></pre><button type="button" data-copy="c-quest">Copy</button></div>
         <p class="check">Pass: the script ends with <b>[quest] done</b>.</p>
       </div>
 

@@ -9,6 +9,9 @@ Troubleshooting, Real robot (reserved).
 
 ## Install (new machine)
 
+**With a coding agent:** tell it *"Install robot_remote on this machine by following [AGENT_INSTALL.md](AGENT_INSTALL.md)"*.
+It runs the steps below, checks each one, and asks you to run the `sudo` parts.
+
 Ubuntu 22.04, NVIDIA RTX GPU (driver 580+), ROS 2 Humble, about 40 GB free. Details for each step are in the manual's Install page.
 
 ```bash
@@ -19,13 +22,14 @@ sudo apt install -y ros-humble-desktop ros-humble-xacro python3-colcon-common-ex
 # 2. uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 # 3. this repo
-gh repo clone Patrick-zhuyanxun/robot_remote ~/robot_remote && cd ~/robot_remote   # all commands below run from here
+git clone https://github.com/Patrick-zhuyanxun/robot_remote.git ~/robot_remote && cd ~/robot_remote   # all commands below run from here
 # 4. Isaac Sim 6.1 -> ~/isaac-sim-6.1 (or export ISAAC_SIM=...)
 curl -L -o ~/Downloads/isaac-sim-6.1.0.zip https://downloads.isaacsim.nvidia.com/isaac-sim-standalone-6.1.0-linux-x86_64.zip
 mkdir -p ~/isaac-sim-6.1 && unzip -q ~/Downloads/isaac-sim-6.1.0.zip -d ~/isaac-sim-6.1
 # 5-7. ROS workspace (clone + patch + build), Quest env (+ CloudXR EULA), recorder env
 ./setup/install_ros_ws.sh
 ./setup/install_quest_env.sh
+.venv_quest/bin/python -m isaacteleop.cloudxr --accept-eula   # read and accept once per machine
 ./setup/install_record_env.sh      # or: export LEROBOT_PY=<your lerobot 0.5.x python>
 # 8. check
 ./setup/check_env.sh

@@ -60,7 +60,7 @@ def apply_style(root):
 def lan_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            s.connect(("192.168.50.1", 9))  # no packet is sent; just picks the LAN interface
+            s.connect(("10.255.255.255", 9))  # UDP connect sends no packet; it just picks the default interface
             return s.getsockname()[0]
     except OSError:
         return "?"

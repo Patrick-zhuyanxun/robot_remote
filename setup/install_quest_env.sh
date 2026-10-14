@@ -6,6 +6,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV="$HERE/../.venv_quest"
 [ -x "$VENV/bin/python" ] || uv venv --python /usr/bin/python3.10 --system-site-packages "$VENV"
 VIRTUAL_ENV="$VENV" uv pip install "isaacteleop[cloudxr]==1.3.131" "numpy<2" scipy
-# CloudXR runtime licence: accept once per machine (stored under ~/.cloudxr).
-"$VENV/bin/python" -m isaacteleop.cloudxr --accept-eula
 echo "[quest] done: $VENV"
+# CloudXR runtime licence: a person accepts it once per machine (stored under ~/.cloudxr).
+[ -d "$HOME/.cloudxr" ] || echo "[quest] next: read and accept the CloudXR licence:  $VENV/bin/python -m isaacteleop.cloudxr --accept-eula"
