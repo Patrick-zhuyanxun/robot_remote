@@ -1,0 +1,418 @@
+#!/usr/bin/env python3
+"""Meta Quest (Isaac Teleop / CloudXR) -> BOTH igus ReBeL arms of the Isaac dual-arm rig.
+
+  left  controller --clutch--> left  gripper TCP --IK--> arm_left_joint1..6   \\
+  right controller --clutch--> right gripper TCP --IK--> arm_right_joint1..6  -> /dual_arm/isaac_joint_commands
+  triggers -> arm_{left,right}_xeg32_*_carriage_joint                         /
+
+Commands go straight to Isaac (no ros2_control / MoveIt): the rig's joints follow position targets
+directly, which is much snappier than streaming through the joint_trajectory_controller.
+Do NOT run dual_arm_sim/start_right_arm_moveit.sh at the same time - its ros2_control would also
+write the right arm and yank it back.
+
+Controls (per hand): hold SQUEEZE to move that arm, release to freeze it; TRIGGER closes its gripper.
+
+  robot_remote/quest_teleop/run_quest_dual_arm.sh
+"""
+
+import argparse
+import subprocess
+import time
+from pathlib import Path
+
+import numpy as np
+import rclpy
+from rclpy.node import Node
+from scipy.spatial.transform import Rotation
+from geometry_msgs.msg import PoseStamped
+from sensor_msgs.msg import JointState
+from std_msgs.msg import String
+
+from quest_arm_teleop import ARM_JOINTS, HOME_DEG, TCP_PRESETS, QuestController, SerialChain, step_toward
+
+HERE = Path(__file__).resolve().parent
+SIDES = ("left", "right")
+
+# Arm base poses in the rig/world frame, from dual_arm_rig_v2.usda (sliders and lift at 0).
+ARM_BASE_XYZ = {"left": (0.228209, -0.179297, 1.1093), "right": (-0.231737, -0.179297, 1.1093)}
+ARM_BASE_YAW_DEG = -90.0
+
+# OpenXR anchor frame is set by quest_arm_teleop.OPERATOR_T_ANCHOR: operator X fwd, Y left, Z up.
+
+
+def tool_from_controller(r_tool: Rotation, twist_axis_ctrl, right_ctrl, right_base) -> Rotation:
+    """Fixed-at-engage rotation M mapping controller-local axes onto tool-local axes:
+       controller twist axis (Quest handle long axis)      -> tool +Z (flange axis): twist hand = spin tool
+       'operator right' seen in the controller frame (at engage, orthogonalised)
+                                                            -> tool axis pointing to base 'right'
+                                                                                    : nod hand  = tilt tool
+    Using the operator-right direction measured at engage (instead of a fixed controller +X) keeps the
+    nod sense right for both hands, whatever the left/right OpenXR grip-frame conventions are."""
+    def basis(a3, a1):
+        e3 = np.asarray(a3, float) / np.linalg.norm(a3)
+        e1 = np.asarray(a1, float) - np.dot(a1, e3) * e3
+        if np.linalg.norm(e1) < 1e-3:  # degenerate: hand pointing sideways - fall back to any perpendicular
+            e1 = np.cross(e3, [0.0, 0.0, 1.0]) if abs(e3[2]) < 0.9 else np.cross(e3, [1.0, 0.0, 0.0])
+        e1 /= np.linalg.norm(e1)
+        return np.column_stack([e1, np.cross(e3, e1), e3])
+
+    e_basis = basis(twist_axis_ctrl, right_ctrl)
+    f_basis = basis([0.0, 0.0, 1.0], r_tool.inv().apply(right_base))
+    return Rotation.from_matrix(f_basis @ e_basis.T)
+
+
+def make_urdf() -> str:
+    pkg = subprocess.run(["ros2", "pkg", "prefix", "igus_rebel_description"], check=True,
+                         capture_output=True, text=True).stdout.strip()
+    xacro = Path(pkg) / "share/igus_rebel_description/urdf/igus_rebel_xeg32_wrapper.urdf.xacro"
+    return subprocess.run(["xacro", str(xacro), "include_ros2_control:=false"], check=True,
+                          capture_output=True, text=True).stdout
+
+
+class Arm:
+    """Per-arm clutch + IK state."""
+
+    def __init__(self, side, chain, args):
+        self.side, self.chain, self.args = side, chain, args
+        self.names = [f"arm_{side}_{j}" for j in ARM_JOINTS]
+        self.grip_names = [f"arm_{side}_xeg32_left_carriage_joint", f"arm_{side}_xeg32_right_carriage_joint"]
+        self.shoulder = chain.joint_origin(1)
+        self.world_T_base = np.eye(4)
+        self.world_T_base[:3, :3] = Rotation.from_euler("z", ARM_BASE_YAW_DEG, degrees=True).as_matrix()
+        self.world_T_base[:3, 3] = ARM_BASE_XYZ[side]
+        self.q_meas = None
+        self.q_cmd = None
+        self.engaged = False
+        self.tracked = False
+        self.home_p = self.home_r = self.origin_p = self.origin_r = None
+        self.p_des = None
+        self.reach = args.max_reach
+        self.last_trig = None
+        self.last_log = 0.0
+        self.r_delta = Rotation.identity()
+        self.d_local = Rotation.identity()
+        self.origin_q = Rotation.identity()
+        self.m_tool_ctrl = Rotation.identity()
+        self.raw_quat = np.array([0.0, 0.0, 0.0, 1.0])
+
+    def points_world(self, q):
+        """Guard points in the rig frame: wrist (joint5 origin) plus flange, XEG-32 jaw centre and knife
+        tip - always all of them, whatever --tcp-preset is, so the ~18 cm of tooling past the flange
+        is covered by the inter-arm guard."""
+        t = np.eye(4)
+        k = 0
+        wrist = None
+        for t_o, axis, idx in self.chain.elems[:-1]:  # last element = the fixed TCP offset
+            t = t @ t_o
+            if axis is not None:
+                if k == 4:
+                    wrist = t[:3, 3].copy()
+                r = np.eye(4)
+                r[:3, :3] = Rotation.from_rotvec(axis * q[idx]).as_matrix()
+                t = t @ r
+                k += 1
+        tool = [t[:3, :3] @ np.array(TCP_PRESETS[n]) + t[:3, 3] for n in ("flange", "gripper", "eef")]
+        pts = np.stack([wrist, *tool])
+        return (self.world_T_base[:3, :3] @ pts.T).T + self.world_T_base[:3, 3]
+
+
+class DualArmTeleop(Node):
+    def __init__(self, args, chain):
+        super().__init__("quest_dual_arm_teleop")
+        self.args = args
+        self.arms = {s: Arm(s, chain, args) for s in args.arms}
+        self.cmd_pub = self.create_publisher(JointState, "/dual_arm/isaac_joint_commands", 10)
+        # for teleop_viz / RViz: where each arm's TCP is being asked to go (frame <side>/base_link)
+        self.target_pub = {s: self.create_publisher(PoseStamped, f"/quest_teleop/{s}/target", 10) for s in args.arms}
+        # for record_dataset.py: full 14-D action every tick + episode events from the controller buttons
+        self.action_pub = self.create_publisher(JointState, "/quest_teleop/action", 10)
+        self.event_pub = self.create_publisher(String, "/quest_teleop/events", 10)
+        self.all_q = {s: None for s in SIDES}       # measured arm joints of BOTH arms (driven or not)
+        self.all_grip = {s: 0.0 for s in SIDES}     # measured gripper closedness [0, 1]
+        self.create_subscription(JointState, "/dual_arm/isaac_joint_states", self._on_js, 10)
+
+    def _on_js(self, msg):
+        d = dict(zip(msg.name, msg.position))
+        for s in SIDES:
+            names = [f"arm_{s}_{j}" for j in ARM_JOINTS]
+            if all(n in d for n in names):
+                self.all_q[s] = np.array([d[n] for n in names])
+            g = f"arm_{s}_xeg32_left_carriage_joint"
+            if g in d:
+                a = self.args
+                self.all_grip[s] = float(np.clip((d[g] - a.gripper_open) / (a.gripper_closed - a.gripper_open), 0.0, 1.0))
+        for arm in self.arms.values():
+            if all(n in d for n in arm.names):
+                arm.q_meas = np.array([d[n] for n in arm.names])
+
+    def spin_for(self, seconds):
+        end = time.perf_counter() + seconds
+        while time.perf_counter() < end:
+            rclpy.spin_once(self, timeout_sec=0.002)
+
+    def wait_ready(self):
+        while rclpy.ok() and any(a.q_meas is None for a in self.arms.values()):
+            self.get_logger().info("waiting for /dual_arm/isaac_joint_states (is run_dual_arm_sim.sh running?)",
+                                   throttle_duration_sec=3.0)
+            rclpy.spin_once(self, timeout_sec=0.2)
+
+    def send(self, cmds: dict, grips: dict | None = None):
+        names, positions = [], []
+        for side, q in cmds.items():
+            names += self.arms[side].names
+            positions += [float(v) for v in q]
+        for side, pos in (grips or {}).items():
+            names += self.arms[side].grip_names
+            positions += [float(pos), float(pos)]
+        if names:
+            self.cmd_pub.publish(JointState(name=names, position=positions))
+
+    def publish_action(self):
+        """Commanded joints of both arms (held while released; measured for undriven arms) + gripper closedness."""
+        names, pos = [], []
+        for s in SIDES:
+            arm = self.arms.get(s)
+            q = arm.q_cmd if arm is not None and arm.q_cmd is not None else self.all_q[s]
+            g = arm.last_trig if arm is not None and arm.last_trig is not None else self.all_grip[s]
+            if q is None:
+                return
+            names += [f"arm_{s}_{j}" for j in ARM_JOINTS] + [f"arm_{s}_gripper"]
+            pos += [float(v) for v in q] + [float(g)]
+        msg = JointState(name=names, position=pos)
+        msg.header.stamp = self.get_clock().now().to_msg()
+        self.action_pub.publish(msg)
+
+    def go_home(self, vel=0.4, rate=30.0):
+        q_home = np.deg2rad(HOME_DEG)
+        start = {s: a.q_meas.copy() for s, a in self.arms.items()}
+        span = max(np.max(np.abs(q_home - q)) for q in start.values())
+        steps = max(1, int(np.ceil(span / vel * rate)))
+        self.get_logger().info(f"moving {list(self.arms)} to home pose {HOME_DEG} deg ({steps / rate:.1f} s)")
+        for k in range(1, steps + 1):
+            self.send({s: q + (q_home - q) * k / steps for s, q in start.items()})
+            self.spin_for(1.0 / rate)
+        for _ in range(int(rate)):
+            self.send({s: q_home for s in self.arms})
+            self.spin_for(1.0 / rate)
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--arms", nargs="+", choices=SIDES, default=list(SIDES), help="which rig arms to drive")
+    p.add_argument("--swap-hands", action="store_true", help="left controller drives the right arm and vice versa")
+    p.add_argument("--yaw-deg", type=float, default=0.0,
+                   help="rotation about Z from operator frame (X fwd, Y left, Z up) to the arm base frames "
+                        "(both arms share one orientation). 0 = you face the way the arms reach.")
+    p.add_argument("--tcp-preset", choices=sorted(TCP_PRESETS), default="flange",
+                   help="control point: flange = igus_tool0 on the flange (default), eef = repo knife tip xeg32_tool_tip, gripper = XEG-32 jaw centre")
+    p.add_argument("--tcp", type=float, nargs=3, default=None, metavar=("X", "Y", "Z"),
+                   help="custom control point in link6 frame [m]; overrides --tcp-preset")
+    p.add_argument("--scale", type=float, default=1.0, help="hand->EE translation scale")
+    p.add_argument("--rate", type=float, default=30.0)
+    p.add_argument("--max-joint-vel", type=float, default=0.785, help="rad/s per joint (= ReBeL / Isaac drive limit 45 deg/s)")
+    p.add_argument("--max-lin-vel", type=float, default=0.50, help="commanded TCP speed limit [m/s]")
+    p.add_argument("--max-rot-vel", type=float, default=90.0, help="commanded TCP rotation speed limit [deg/s]")
+    p.add_argument("--rot-frame", choices=["tool", "base"], default="tool",
+                   help="tool: twisting the controller spins the tool about its own Z, nodding tilts it "
+                        "(controller-local rotation applied in the tool frame); base: hand rotation applied "
+                        "about the fixed base axes")
+    p.add_argument("--ctrl-twist-axis", type=float, nargs=3, default=(0.0, -0.707, -0.707), metavar=("X", "Y", "Z"),
+                   help="Quest handle long axis in the controller (OpenXR grip) frame; measured from your "
+                        "twists as about (-0.16, -0.73, -0.66)")
+    p.add_argument("--max-lead-deg", type=float, default=15.0,
+                   help="anti-windup: command may lead the commanded-joint pose by at most this rotation [deg]")
+    p.add_argument("--max-lead-m", type=float, default=0.05,
+                   help="anti-windup: command may lead the commanded-joint pose by at most this distance [m]")
+    p.add_argument("--rot-weight", type=float, default=1.0, help="orientation gain of the secondary IK task")
+    p.add_argument("--clutch", type=float, default=0.5, help="squeeze threshold")
+    p.add_argument("--max-reach", type=float, default=0.55, help="EE target clamp around the shoulder [m]")
+    p.add_argument("--min-arm-dist", type=float, default=0.12,
+                   help="inter-arm guard: TCP/wrist points of the two arms may not get closer than this [m]")
+    p.add_argument("--gripper-open", type=float, default=0.00483688, help="carriage pos at trigger 0 [m]")
+    p.add_argument("--gripper-closed", type=float, default=-0.0116631, help="carriage pos at trigger 1 [m]")
+    p.add_argument("--no-home", action="store_true")
+    p.add_argument("--quiet", action="store_true", help="no per-0.5 s axis-check log while engaged")
+    args, ros_args = p.parse_known_args()
+
+    rclpy.init(args=ros_args)
+    tcp = tuple(args.tcp) if args.tcp else TCP_PRESETS[args.tcp_preset]
+    chain = SerialChain(make_urdf(), "base_link", "link6", ARM_JOINTS, tcp_xyz=tcp)
+    node = DualArmTeleop(args, chain)
+    log = node.get_logger()
+    log.info(f"control point ({'custom' if args.tcp else args.tcp_preset}) in link6 = {np.round(tcp, 4).tolist()} m")
+    node.wait_ready()
+    if not args.no_home:
+        node.go_home()
+    node.spin_for(0.2)
+    for arm in node.arms.values():
+        arm.q_cmd = arm.q_meas.copy()
+
+    hand_of = {s: ({"left": "right", "right": "left"}[s] if args.swap_hands else s) for s in node.arms}
+    xr = QuestController(sorted(set(hand_of.values())), HERE / "cloudxr_quest3.env")
+    log.info("CloudXR up. Quest Browser -> https://nvidia.github.io/IsaacTeleop/client/v1.3.131/ , "
+             "Server IP = this PC, Connect. Per hand: hold SQUEEZE to move that arm, TRIGGER = its gripper.")
+
+    r_base_op = Rotation.from_euler("z", args.yaw_deg, degrees=True)
+    right_base = r_base_op.apply([0.0, -1.0, 0.0])  # operator 'right' in the arm base frame
+    log.info(f"rotation frame: {args.rot_frame}" + (
+        f" (controller twist axis {np.round(args.ctrl_twist_axis, 2).tolist()} -> tool Z)" if args.rot_frame == "tool" else ""))
+    dt = 1.0 / args.rate
+    max_dq = args.max_joint_vel * dt
+    both = len(node.arms) == 2
+    last_buttons = {}
+    try:
+        while rclpy.ok():
+            t0 = time.perf_counter()
+            rclpy.spin_once(node, timeout_sec=0.0)
+            readings = xr.read_all()
+            cand, grips = {}, {}
+            for side, arm in node.arms.items():
+                tracked, pos, quat, squeeze, trigger = readings[hand_of[side]]
+                if tracked != arm.tracked:
+                    log.info(f"[{side} arm <- {hand_of[side]} hand] " + ("TRACKED" if tracked else "tracking LOST"))
+                    arm.tracked = tracked
+                if not tracked:
+                    arm.engaged = False
+                    continue
+                p_b = r_base_op.apply(pos)
+                r_b = r_base_op * Rotation.from_quat(quat) * r_base_op.inv()
+                if squeeze >= args.clutch and not arm.engaged:
+                    t_now = chain.fk(arm.q_meas)
+                    arm.home_p, arm.home_r = t_now[:3, 3].copy(), Rotation.from_matrix(t_now[:3, :3])
+                    arm.origin_p, arm.origin_r = p_b.copy(), r_b
+                    arm.origin_q = Rotation.from_quat(quat)  # controller orientation at engage (operator frame)
+                    arm.m_tool_ctrl = tool_from_controller(arm.home_r, args.ctrl_twist_axis,
+                                                           arm.origin_q.inv().apply([0.0, -1.0, 0.0]), right_base)
+                    arm.q_cmd = arm.q_meas.copy()
+                    arm.cmd_p, arm.cmd_r = arm.home_p.copy(), arm.home_r  # rate-limited Cartesian command
+                    # never clamp tighter than where the arm already is, or engaging would jump it inward
+                    arm.reach = max(args.max_reach, float(np.linalg.norm(arm.home_p - arm.shoulder)))
+                    arm.engaged = True
+                    log.info(f"[{side}] engaged")
+                elif squeeze < args.clutch and arm.engaged:
+                    arm.engaged = False
+                    log.info(f"[{side}] released")
+                if arm.engaged:
+                    p_des = arm.home_p + args.scale * (p_b - arm.origin_p)
+                    d = p_des - arm.shoulder
+                    if np.linalg.norm(d) > arm.reach:
+                        p_des = arm.shoulder + d * (arm.reach / np.linalg.norm(d))
+                    arm.r_delta = r_b * arm.origin_r.inv()  # hand rotation since engage, in arm base axes
+                    arm.raw_quat = quat
+                    if args.rot_frame == "tool":
+                        # rotation of the controller about its OWN axes since engage, re-expressed on the
+                        # tool's own axes and applied on the tool side (right-multiplied)
+                        arm.d_local = arm.origin_q.inv() * Rotation.from_quat(quat)
+                        r_des = arm.home_r * (arm.m_tool_ctrl * arm.d_local * arm.m_tool_ctrl.inv())
+                    else:
+                        r_des = arm.r_delta * arm.home_r
+                    # Cartesian rate limit: move the commanded pose toward the hand pose at <= v / w, so a
+                    # fast or large hand rotation is followed along a smooth Cartesian path instead of the
+                    # joint-space shortcut (which made the TCP swing 10-18 cm during 60-90 deg wrist turns).
+                    dp = p_des - arm.cmd_p
+                    n = np.linalg.norm(dp)
+                    if n > args.max_lin_vel * dt:
+                        dp *= args.max_lin_vel * dt / n
+                    arm.cmd_p = arm.cmd_p + dp
+                    dr = (r_des * arm.cmd_r.inv()).as_rotvec()
+                    a = np.linalg.norm(dr)
+                    w_max = np.deg2rad(args.max_rot_vel) * dt
+                    if a > w_max:
+                        dr *= w_max / a
+                    arm.cmd_r = Rotation.from_rotvec(dr) * arm.cmd_r
+                    # Anti-windup: keep the command within --max-lead-* of what the commanded joints reach.
+                    # When the hand asks for more than the wrist can do (e.g. 130 deg roll, pitch past joint5),
+                    # the IK otherwise chases a far-away configuration and the TCP swings on the way.
+                    t_ach = chain.fk(arm.q_cmd)
+                    r_ach = Rotation.from_matrix(t_ach[:3, :3])
+                    e_r = (arm.cmd_r * r_ach.inv()).as_rotvec()
+                    m = np.linalg.norm(e_r)
+                    lead_r = np.deg2rad(args.max_lead_deg)
+                    if m > lead_r:
+                        arm.cmd_r = Rotation.from_rotvec(e_r * (lead_r / m)) * r_ach
+                    e_p = arm.cmd_p - t_ach[:3, 3]
+                    m = np.linalg.norm(e_p)
+                    if m > args.max_lead_m:
+                        arm.cmd_p = t_ach[:3, 3] + e_p * (args.max_lead_m / m)
+                    t_des = np.eye(4)
+                    t_des[:3, 3] = arm.cmd_p
+                    t_des[:3, :3] = arm.cmd_r.as_matrix()
+                    q_ik = chain.ik(arm.q_cmd, t_des, rot_weight=args.rot_weight)
+                    cand[side] = step_toward(arm.q_cmd, q_ik, max_dq)
+                    arm.p_des = p_des
+                    ps = PoseStamped()
+                    ps.header.frame_id, ps.header.stamp = f"{side}/base_link", node.get_clock().now().to_msg()
+                    ps.pose.position.x, ps.pose.position.y, ps.pose.position.z = map(float, arm.cmd_p)
+                    qx, qy, qz, qw = arm.cmd_r.as_quat()
+                    ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z, ps.pose.orientation.w = (
+                        float(qx), float(qy), float(qz), float(qw))
+                    node.target_pub[side].publish(ps)
+                if arm.last_trig is None or abs(trigger - arm.last_trig) > 0.01:
+                    grips[side] = args.gripper_open + (args.gripper_closed - args.gripper_open) * trigger
+                    arm.last_trig = trigger
+
+            # Inter-arm guard: refuse any step that brings the arms' TCP/wrist points closer than
+            # --min-arm-dist while also decreasing their distance (moving apart is always allowed).
+            if both and cand:
+                def min_dist(qs):
+                    a = node.arms["left"].points_world(qs["left"])
+                    b = node.arms["right"].points_world(qs["right"])
+                    return np.min(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2))
+                now = {s: node.arms[s].q_cmd for s in SIDES}
+                nxt = {s: cand.get(s, now[s]) for s in SIDES}
+                d_now, d_next = min_dist(now), min_dist(nxt)
+                if d_next < args.min_arm_dist and d_next < d_now:
+                    log.warning(f"arms {d_next * 100:.1f} cm apart - holding both (move them apart)",
+                             throttle_duration_sec=1.0)
+                    cand = {}
+
+            for side, q in cand.items():
+                node.arms[side].q_cmd = q
+            node.send(cand, grips)
+            node.publish_action()
+            # episode events: A/X = start/save (toggle), B/Y = discard; rising edges, either hand
+            for h, (prim, sec) in xr.buttons.items():
+                was_p, was_s = last_buttons.get(h, (False, False))
+                for pressed, was, ev in ((prim, was_p, "toggle"), (sec, was_s, "discard")):
+                    if pressed and not was:
+                        node.event_pub.publish(String(data=ev))
+                        log.info(f"[{h} hand] button -> {ev}")
+                last_buttons[h] = (prim, sec)
+
+            if not args.quiet:
+                for side, arm in node.arms.items():
+                    if side in cand and t0 - arm.last_log > 0.5:
+                        arm.last_log = t0
+                        hand_op = r_base_op.inv().apply(r_base_op.apply(readings[hand_of[side]][1]) - arm.origin_p) * 100
+                        ee = chain.fk(arm.q_meas)[:3, 3]
+                        log.info(
+                            f"[{side}] hand[cm] fwd %+5.1f left %+5.1f up %+5.1f | cmd dEE x %+5.1f y %+5.1f z %+5.1f"
+                            " | actual dEE x %+5.1f y %+5.1f z %+5.1f"
+                            % (*hand_op, *((arm.cmd_p - arm.home_p) * 100), *((ee - arm.home_p) * 100))
+                        )
+
+                        def rv(r):  # "angle deg about [axis]"
+                            v = r.as_rotvec()
+                            a = np.rad2deg(np.linalg.norm(v))
+                            return f"{a:5.1f}deg about {np.round(v / np.linalg.norm(v), 2) if a > 0.5 else '[  -  ]'}"
+                        r_meas = Rotation.from_matrix(chain.fk(arm.q_meas)[:3, :3])
+                        if args.rot_frame == "tool":
+                            hand_t = arm.m_tool_ctrl * arm.d_local * arm.m_tool_ctrl.inv()
+                            log.info(f"[{side}] ROT(tool frame) hand {rv(hand_t)} | cmd {rv(arm.home_r.inv() * arm.cmd_r)}"
+                                     f" | actual {rv(arm.home_r.inv() * r_meas)}   [axis z = spin about flange axis]")
+                            continue
+                        hand_rot_op = r_base_op.inv() * arm.r_delta * r_base_op   # operator frame: x fwd, y left, z up
+                        meas_rot = r_meas * arm.home_r.inv()
+                        log.info(f"[{side}] ROT hand(op x fwd,y left,z up) {rv(hand_rot_op)} | cmd(base, rate-limited) {rv(arm.cmd_r * arm.home_r.inv())}"
+                                 f" | actual(base) {rv(meas_rot)} | raw quat xyzw {np.round(arm.raw_quat, 3)}")
+            time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        xr.close()
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,266 @@
+#usda 1.0
+(
+    defaultPrim = "World"
+    subLayers = [
+        @./dual_arm_rig_v2.usda@
+    ]
+)
+
+over "World"
+{
+    over "dual_arm_rig"
+    {
+        over "arm_left"
+        {
+            over "base_link"
+            {
+                over "motor1"
+                {
+                    quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (0.228209, -0.179297, 1.2555)
+                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                    over "link1"
+                    {
+                        quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (0.228209, -0.179297, 1.2555)
+                        uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                        over "motor2"
+                        {
+                            quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (0.2507089999993986, -0.17929683547591144, 1.3615000000000002)
+                            uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                            over "link2"
+                            {
+                                quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (0.20170900000070854, -0.17929719377281547, 1.3615000000000002)
+                                uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                over "motor3"
+                                {
+                                    quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (0.2507089999993986, -0.17929683547591144, 1.6030200000000001)
+                                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                    over "link3"
+                                    {
+                                        quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                        float3 xformOp:scale = (1, 1, 1)
+                                        double3 xformOp:translate = (0.2282090000000001, -0.179297, 1.6030200000000001)
+                                        uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                        over "motor4"
+                                        {
+                                            quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                            float3 xformOp:scale = (1, 1, 1)
+                                            double3 xformOp:translate = (0.2282089901652515, -0.17795201857125556, 1.7084994074013562)
+                                            uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                            over "link4"
+                                            {
+                                                quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                                float3 xformOp:scale = (1, 1, 1)
+                                                double3 xformOp:translate = (0.2282089901652515, -0.17795201857125556, 1.7604994074013562)
+                                                uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                over "motor5"
+                                                {
+                                                    quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (0.24640899016476497, -0.17795188548954835, 1.9024994074013561)
+                                                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                    over "link5"
+                                                    {
+                                                        quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                                        float3 xformOp:scale = (1, 1, 1)
+                                                        double3 xformOp:translate = (0.22820899016525154, -0.17795201857125556, 1.9024994074013561)
+                                                        uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                        over "link6"
+                                                        {
+                                                            quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                                            float3 xformOp:scale = (1, 1, 1)
+                                                            double3 xformOp:translate = (0.22820899016525154, -0.17795201857125556, 1.9792994074013561)
+                                                            uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                            over "xeg32_base_link"
+                                                            {
+                                                                quatf xformOp:orient = (0.6087587, 0, 0, 0.79335546)
+                                                                float3 xformOp:scale = (1, 1, 1)
+                                                                double3 xformOp:translate = (0.22820899016525154, -0.17795201857125556, 2.031299407401356)
+                                                                uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                                over "xeg32_left_carriage_link"
+                                                                {
+                                                                    quatf xformOp:orient = (0.70105743, 0.09229839, -0.7010571, 0.092295796)
+                                                                    float3 xformOp:scale = (1, 1, 1)
+                                                                    double3 xformOp:translate = (0.20400983727344313, -0.21673701890551988, 2.060299407401356)
+                                                                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                                }
+
+                                                                over "xeg32_right_carriage_link"
+                                                                {
+                                                                    quatf xformOp:orient = (0.70105743, -0.09229839, 0.7010571, 0.092295796)
+                                                                    float3 xformOp:scale = (1, 1, 1)
+                                                                    double3 xformOp:translate = (0.2685588697089627, -0.19944067772947205, 2.060299407401356)
+                                                                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                                }
+
+                                                                over "xeg32_camera_mount_link"
+                                                                {
+                                                                    quatf xformOp:orient = (0.38732868, 0.47117847, 0.5272501, 0.5915866)
+                                                                    float3 xformOp:scale = (1, 1, 1)
+                                                                    double3 xformOp:translate = (0.2187188631627792, -0.10699021553978692, 2.086299407401356)
+                                                                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        over "arm_right"
+        {
+            over "base_link"
+            {
+                over "motor1"
+                {
+                    quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                    float3 xformOp:scale = (1, 1, 1)
+                    double3 xformOp:translate = (-0.231737, -0.179297, 1.2555)
+                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                    over "link1"
+                    {
+                        quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                        float3 xformOp:scale = (1, 1, 1)
+                        double3 xformOp:translate = (-0.231737, -0.179297, 1.2555)
+                        uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                        over "motor2"
+                        {
+                            quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                            float3 xformOp:scale = (1, 1, 1)
+                            double3 xformOp:translate = (-0.20923700000060141, -0.17929683547591144, 1.3615000000000002)
+                            uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                            over "link2"
+                            {
+                                quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                float3 xformOp:scale = (1, 1, 1)
+                                double3 xformOp:translate = (-0.2582369999992915, -0.17929719377281547, 1.3615000000000002)
+                                uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                over "motor3"
+                                {
+                                    quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                    float3 xformOp:scale = (1, 1, 1)
+                                    double3 xformOp:translate = (-0.20923700000060144, -0.17929683547591144, 1.6030200000000001)
+                                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                    over "link3"
+                                    {
+                                        quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                        float3 xformOp:scale = (1, 1, 1)
+                                        double3 xformOp:translate = (-0.23173699999999994, -0.179297, 1.6030200000000001)
+                                        uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                        over "motor4"
+                                        {
+                                            quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                            float3 xformOp:scale = (1, 1, 1)
+                                            double3 xformOp:translate = (-0.23173700983474854, -0.17795201857125556, 1.7084994074013562)
+                                            uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                            over "link4"
+                                            {
+                                                quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                                float3 xformOp:scale = (1, 1, 1)
+                                                double3 xformOp:translate = (-0.23173700983474854, -0.17795201857125556, 1.7604994074013562)
+                                                uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                over "motor5"
+                                                {
+                                                    quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                                    float3 xformOp:scale = (1, 1, 1)
+                                                    double3 xformOp:translate = (-0.2135370098352351, -0.17795188548954835, 1.9024994074013561)
+                                                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                    over "link5"
+                                                    {
+                                                        quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                                        float3 xformOp:scale = (1, 1, 1)
+                                                        double3 xformOp:translate = (-0.23173700983474854, -0.17795201857125556, 1.9024994074013561)
+                                                        uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                        over "link6"
+                                                        {
+                                                            quatf xformOp:orient = (0.7071042, 0, 0, 0.7071094)
+                                                            float3 xformOp:scale = (1, 1, 1)
+                                                            double3 xformOp:translate = (-0.23173700983474854, -0.17795201857125556, 1.9792994074013561)
+                                                            uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                            over "xeg32_base_link"
+                                                            {
+                                                                quatf xformOp:orient = (0.6087587, 0, 0, 0.79335546)
+                                                                float3 xformOp:scale = (1, 1, 1)
+                                                                double3 xformOp:translate = (-0.23173700983474854, -0.17795201857125556, 2.031299407401356)
+                                                                uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+
+                                                                over "xeg32_left_carriage_link"
+                                                                {
+                                                                    quatf xformOp:orient = (0.70105743, 0.09229839, -0.7010571, 0.092295796)
+                                                                    float3 xformOp:scale = (1, 1, 1)
+                                                                    double3 xformOp:translate = (-0.25593616272655695, -0.21673701890551988, 2.060299407401356)
+                                                                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                                }
+
+                                                                over "xeg32_right_carriage_link"
+                                                                {
+                                                                    quatf xformOp:orient = (0.70105743, -0.09229839, 0.7010571, 0.092295796)
+                                                                    float3 xformOp:scale = (1, 1, 1)
+                                                                    double3 xformOp:translate = (-0.19138713029103738, -0.19944067772947205, 2.060299407401356)
+                                                                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                                }
+
+                                                                over "xeg32_camera_mount_link"
+                                                                {
+                                                                    quatf xformOp:orient = (0.38732868, 0.47117847, 0.5272501, 0.5915866)
+                                                                    float3 xformOp:scale = (1, 1, 1)
+                                                                    double3 xformOp:translate = (-0.24122713683722088, -0.10699021553978692, 2.086299407401356)
+                                                                    uniform token[] xformOpOrder = ["!resetXformStack!", "xformOp:translate", "xformOp:orient", "xformOp:scale"]
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+

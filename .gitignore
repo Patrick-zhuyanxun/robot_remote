@@ -1,0 +1,10 @@
+igus_ws/build/
+igus_ws/install/
+igus_ws/log/
+igus_ws/src/iRC_ROS/
+__pycache__/
+igus_ws/src/Igus_rebel/
+.venv_quest/
+logs/
+.venv_record/
+setup/*.log

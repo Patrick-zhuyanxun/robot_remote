@@ -1,0 +1,15 @@
+diff --git a/irc_ros_moveit_config/launch/rebel.launch.py b/irc_ros_moveit_config/launch/rebel.launch.py
+index 81ce7d7..3b2930e 100644
+--- a/irc_ros_moveit_config/launch/rebel.launch.py
++++ b/irc_ros_moveit_config/launch/rebel.launch.py
+@@ -279,6 +279,10 @@ def opaque_test(context, *args, **kwargs):
+         parameters=[
+             # Passing the entire dict to rviz results in an error with the joint limits
+             {"robot_description": robot_description},
++            # The MotionPlanning plugin only shows the draggable interactive marker when it
++            # can load the SRDF and an IK solver for the planning group.
++            {"robot_description_semantic": robot_description_semantic.perform(context)},
++            load_yaml(Path(robot_description_kinematics.perform(context))),
+         ],
+         condition=IfCondition(use_rviz),
+     )

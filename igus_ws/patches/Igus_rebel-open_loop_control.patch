@@ -1,0 +1,15 @@
+diff --git a/src/igus_rebel/config/controller_mock.yaml b/src/igus_rebel/config/controller_mock.yaml
+index 0bc1028..e523303 100644
+--- a/src/igus_rebel/config/controller_mock.yaml
++++ b/src/igus_rebel/config/controller_mock.yaml
+@@ -19,6 +19,10 @@ rebel_arm_trajectory_controller:
+       - joint6
+     command_interfaces: [position]
+     state_interfaces: [position, velocity]
++    # Start each new (streamed) trajectory from the last COMMAND, not the measured state.
++    # With the lagging Isaac / topic_based feedback, restarting from the measured state made 30 Hz
++    # teleop streaming creep at ~1/3 of the commanded speed. Sim/mock only; controller.yaml untouched.
++    open_loop_control: true
+ 
+     # Same trajectory tolerances as controller.yaml; see the rationale there.
+     # stopped_velocity_tolerance is disabled (was 0.05) so this matches controller.yaml and
