@@ -8,3 +8,5 @@ igus_ws/src/Igus_rebel/
 logs/
 .venv_record/
 setup/*.log
+dataset/
+datasets/

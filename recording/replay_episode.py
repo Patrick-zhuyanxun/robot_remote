@@ -67,17 +67,24 @@ class Replayer(Node):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--name", required=True)
+    p.add_argument("--name", help="dataset folder name under --root")
     p.add_argument("--root", default=os.environ.get("ROBOT_REMOTE_DATASETS", "~/datasets"))
+    p.add_argument("--path", help="dataset folder (instead of --name/--root)")
     p.add_argument("--episode", type=int, default=0)
     args = p.parse_args()
 
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
-    root = Path(args.root).expanduser().resolve() / args.name
+    if args.path:
+        root = Path(args.path).expanduser().resolve()
+        args.name = root.name
+    elif args.name:
+        root = Path(args.root).expanduser().resolve() / args.name
+    else:
+        sys.exit("[replay] give --path <dataset folder> or --name <name> [--root <folder>]")
     if not (root / "meta" / "info.json").is_file():
         sys.exit(f"[replay] no dataset at {root}\n"
-                 f"         use the dataset name and Save location from the launcher: --name <name> --root <folder>")
+                 f"         use --path <dataset folder>, or the launcher's dataset name and Save location: --name <name> --root <folder>")
     ds = LeRobotDataset(f"local/{args.name}", root=root, episodes=[args.episode])
     hf = ds.hf_dataset
     idx = [i for i in range(len(hf)) if int(hf[i]["episode_index"]) == args.episode]
@@ -109,6 +116,8 @@ def main():
         measured.append(node.state.copy())   # state at frame k, before action k is applied (= how it was recorded)
         node.send(actions[k])
         k += 1
+        if k % ds.fps == 0 or k == len(actions):
+            print(f"[replay] frame {k}/{len(actions)}", flush=True)
         t_next += 1.0 / ds.fps
     measured = np.stack(measured)
 

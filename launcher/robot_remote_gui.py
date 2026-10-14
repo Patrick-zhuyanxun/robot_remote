@@ -41,6 +41,22 @@ def open_manual(page: str = "") -> None:
     webbrowser.open((ROOT / "docs" / "operator_manual.html").as_uri() + (f"#{page}" if page else ""))
 
 
+def apply_style(root):
+    st = ttk.Style(root)
+    st.theme_use("clam")
+    for w in ("TFrame", "TLabelframe"):
+        st.configure(w, background=C["bg"])
+    st.configure("TLabelframe.Label", background=C["bg"], foreground=C["accent"], font=("DejaVu Sans", 11, "bold"))
+    st.configure("TLabel", background=C["bg"], foreground=C["fg"], font=("DejaVu Sans", 10))
+    st.configure("Dim.TLabel", foreground=C["dim"])
+    st.configure("Big.TLabel", font=("DejaVu Sans", 16, "bold"))
+    st.configure("TCheckbutton", background=C["bg"], foreground=C["fg"])
+    st.configure("TRadiobutton", background=C["bg"], foreground=C["fg"])
+    st.map("TCheckbutton", background=[("active", C["bg"])])
+    st.map("TRadiobutton", background=[("active", C["bg"])], foreground=[("disabled", C["dim"])])
+    st.configure("Accent.TButton", font=("DejaVu Sans", 12, "bold"), padding=8)
+
+
 def lan_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -60,11 +76,12 @@ def load_cfg():
 class Proc:
     """A launched script: log file + optional line callback + stdin for the recorder."""
 
-    def __init__(self, name, cmd, on_line=None, stdin=False):
+    def __init__(self, name, cmd, on_line=None, stdin=False, extra_env=None):
         self.name, self.cmd, self.on_line = name, cmd, on_line
         LOG_DIR.mkdir(exist_ok=True)
         self.log_path = LOG_DIR / f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.log"
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "AMENT_PREFIX_PATH", "LD_LIBRARY_PATH")}
+        env.update(extra_env or {})
         self.p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                   stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
                                   text=True, bufsize=1, env=env, start_new_session=True)
@@ -116,19 +133,7 @@ class App(tk.Tk):
 
     # ------------------------------------------------------------------ look & feel
     def _style(self):
-        st = ttk.Style(self)
-        st.theme_use("clam")
-        for w in ("TFrame", "TLabelframe"):
-            st.configure(w, background=C["bg"])
-        st.configure("TLabelframe.Label", background=C["bg"], foreground=C["accent"], font=("DejaVu Sans", 11, "bold"))
-        st.configure("TLabel", background=C["bg"], foreground=C["fg"], font=("DejaVu Sans", 10))
-        st.configure("Dim.TLabel", foreground=C["dim"])
-        st.configure("Big.TLabel", font=("DejaVu Sans", 16, "bold"))
-        st.configure("TCheckbutton", background=C["bg"], foreground=C["fg"])
-        st.configure("TRadiobutton", background=C["bg"], foreground=C["fg"])
-        st.map("TCheckbutton", background=[("active", C["bg"])])
-        st.map("TRadiobutton", background=[("active", C["bg"])], foreground=[("disabled", C["dim"])])
-        st.configure("Accent.TButton", font=("DejaVu Sans", 12, "bold"), padding=8)
+        apply_style(self)
 
     # ------------------------------------------------------------------ settings page
     def _build_settings(self):
@@ -211,10 +216,16 @@ class App(tk.Tk):
         bar.pack(fill="x", pady=10)
         ttk.Button(bar, text="▶  Start", style="Accent.TButton", command=self.start).pack(side="right")
         ttk.Button(bar, text="? Manual", command=open_manual).pack(side="right", padx=8)
+        ttk.Button(bar, text="⏵ Play back a dataset...", command=self.open_replay).pack(side="left")
 
         ttk.Label(right, text="Quest controller", style="Big.TLabel").pack(anchor="w")
         self._legend(right).pack(pady=6)
         return f
+
+    def open_replay(self):
+        from replay_window import ReplayWindow
+        d = Path(self.v_root.get()).expanduser() / self.v_name.get()
+        ReplayWindow(self, str(d) if (d / "meta" / "info.json").is_file() else None)
 
     def _browse(self):
         d = filedialog.askdirectory(initialdir=self.v_root.get() or str(Path.home()))

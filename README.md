@@ -106,7 +106,8 @@ motion even though Isaac runs below real time (≈0.5× with three cameras).
 | `dual_arm_sim/run_dual_arm_sim.sh [--cameras head wrist_left wrist_right] [--headless]` | Isaac Sim rig + ROS 2 bridge. Do not source `/opt/ros` in this terminal. |
 | `quest_teleop/run_quest_dual_arm.sh [--arms left right] [--yaw-deg 180 --swap-hands]` | Quest → both arms, direct to Isaac. |
 | `recording/run_record.sh --name N --task "…"` | Recorder. Keyboard fallback: Enter = start/save, d = discard, q = quit. |
-| `recording/run_replay.sh --name N --root <save location> --episode K` | Replays recorded actions into Isaac and compares with recorded states (alignment check). |
+| `launcher/run_replay_gui.sh [dataset folder]` | Playback window: choose a dataset folder + episode, then **View** (LeRobot viewer / Rerun) or **Replay in Isaac**. |
+| `recording/run_replay.sh --path <dataset folder> --episode K` | Replays recorded actions into Isaac and compares with recorded states (alignment check). |
 | `quest_teleop/run_teleop_viz.sh` | RViz view of the teleop frames (arm bases, control point, hand-motion axes). |
 | `dual_arm_sim/start_right_arm_moveit.sh` | MoveIt/RViz planning for the right arm (do not run together with Quest teleop). |
 
