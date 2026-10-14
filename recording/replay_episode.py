@@ -11,6 +11,7 @@ Do not run the Quest teleop at the same time (both would command the arms).
 
 import argparse
 import os
+import sys
 import time
 from pathlib import Path
 
@@ -74,6 +75,9 @@ def main():
     from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
     root = Path(args.root).expanduser().resolve() / args.name
+    if not (root / "meta" / "info.json").is_file():
+        sys.exit(f"[replay] no dataset at {root}\n"
+                 f"         use the dataset name and Save location from the launcher: --name <name> --root <folder>")
     ds = LeRobotDataset(f"local/{args.name}", root=root, episodes=[args.episode])
     hf = ds.hf_dataset
     idx = [i for i in range(len(hf)) if int(hf[i]["episode_index"]) == args.episode]

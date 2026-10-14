@@ -264,9 +264,10 @@ sudo rosdep init; rosdep update</code></pre><button type="button" data-copy="c-r
 
       <div class="step" data-step="Get the code">
         <h2>Get the robot_remote code</h2>
-        <p>The repository is private. Ask its owner for access, log in with <code>gh auth login</code>, then clone it. Any location works; this manual uses <code>~/robot_remote</code>.</p>
-        <div class="copyrow"><pre><code id="c-clone">gh repo clone Patrick-zhuyanxun/robot_remote ~/robot_remote</code></pre><button type="button" data-copy="c-clone">Copy</button></div>
-        <p class="check">Pass: <code>ls ~/robot_remote</code> shows <code>launcher  quest_teleop  recording  setup  dual_arm_sim …</code></p>
+        <p>The repository is private. Ask its owner for access, log in with <code>gh auth login</code>, then clone it. Any location works. <strong>All later commands are run from inside this folder</strong> (they start with <code>./</code>).</p>
+        <div class="copyrow"><pre><code id="c-clone">gh repo clone Patrick-zhuyanxun/robot_remote ~/robot_remote
+cd ~/robot_remote</code></pre><button type="button" data-copy="c-clone">Copy</button></div>
+        <p class="check">Pass: <code>ls</code> shows <code>launcher  quest_teleop  recording  setup  dual_arm_sim …</code></p>
       </div>
 
       <div class="step" data-step="Isaac Sim 6.1">
@@ -284,7 +285,7 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
       <div class="step" data-step="ROS workspace">
         <h2>Build the ROS workspace</h2>
         <p>Clones the igus ReBeL description and MoveIt config (<code>fani8j/Igus_rebel</code>, branch <code>hcut-path-consistency</code>, pinned commit) into <code>igus_ws/src</code>, applies our patch from <code>igus_ws/patches/</code>, installs apt dependencies with rosdep and runs colcon. About 5 minutes.</p>
-        <div class="copyrow"><pre><code id="c-ws">~/robot_remote/setup/install_ros_ws.sh</code></pre><button type="button" data-copy="c-ws">Copy</button></div>
+        <div class="copyrow"><pre><code id="c-ws">./setup/install_ros_ws.sh</code></pre><button type="button" data-copy="c-ws">Copy</button></div>
         <p>The patch sets <code>open_loop_control: true</code> in the simulated controller config. Without it, MoveIt-driven streaming in the sim creeps at about a third of the commanded speed.</p>
         <p>Add <code>--with-irc</code> to also build the older CommonplaceRobotics <code>iRC_ROS</code> packages; only the single-arm demos in <code>igus_rebel_sim/</code> use them.</p>
         <p class="check">Pass: the script ends with <b>[ws] done</b> and colcon reports no failed packages.</p>
@@ -293,14 +294,14 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
       <div class="step" data-step="Quest environment">
         <h2>Create the Quest teleop environment</h2>
         <p>Creates <code>.venv_quest</code>: Python 3.10 so it can import the system ROS 2 <code>rclpy</code>, plus NVIDIA Isaac Teleop with the CloudXR runtime. At the end it asks you to accept the CloudXR licence (once per machine).</p>
-        <div class="copyrow"><pre><code id="c-quest">~/robot_remote/setup/install_quest_env.sh</code></pre><button type="button" data-copy="c-quest">Copy</button></div>
+        <div class="copyrow"><pre><code id="c-quest">./setup/install_quest_env.sh</code></pre><button type="button" data-copy="c-quest">Copy</button></div>
         <p class="check">Pass: the script ends with <b>[quest] done</b>.</p>
       </div>
 
       <div class="step" data-step="Recorder environment">
         <h2>Create the recorder environment</h2>
         <p>Creates <code>.venv_record</code>: Python 3.12 with LeRobot 0.5.1. Python 3.12 matches the <code>rclpy</code> bundled with Isaac Sim, which the recorder borrows.</p>
-        <div class="copyrow"><pre><code id="c-rec">~/robot_remote/setup/install_record_env.sh</code></pre><button type="button" data-copy="c-rec">Copy</button></div>
+        <div class="copyrow"><pre><code id="c-rec">./setup/install_record_env.sh</code></pre><button type="button" data-copy="c-rec">Copy</button></div>
         <p>Already have a LeRobot 0.5.x environment you train with? Skip this step and point the recorder at it, so datasets are written by the version that reads them:</p>
         <div class="copyrow"><pre><code id="c-lp">echo 'export LEROBOT_PY=$HOME/Robotic_infra/lerobot/.venv/bin/python' >> ~/.bashrc</code></pre><button type="button" data-copy="c-lp">Copy</button></div>
         <p class="check">Pass: the script prints <b>[record] lerobot + av OK</b>.</p>
@@ -318,7 +319,7 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
       <div class="step" data-step="Check everything">
         <h2>Check everything</h2>
         <p>One script checks every item above and says how to fix what is missing.</p>
-        <div class="copyrow"><pre><code id="c-chk">~/robot_remote/setup/check_env.sh</code></pre><button type="button" data-copy="c-chk">Copy</button></div>
+        <div class="copyrow"><pre><code id="c-chk">./setup/check_env.sh</code></pre><button type="button" data-copy="c-chk">Copy</button></div>
         <p class="check">Pass: every line is <b>OK</b> and it ends with <b>All good</b>. Next: <a href="#quest" data-go="quest">Set up the Quest</a>.</p>
       </div>
 
@@ -374,8 +375,8 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
 <section class="page" data-page="run" data-title="Run a session" hidden>
   <p class="eyebrow">Every session</p>
   <h1>Run a session</h1>
-  <p class="lede">Everything starts from one window: it launches the simulator, the Quest teleop and the recorder in order and shows their state.</p>
-  <div class="copyrow"><pre><code id="c-gui">~/robot_remote/launcher/run_gui.sh</code></pre><button type="button" data-copy="c-gui">Copy</button></div>
+  <p class="lede">Everything starts from one window: it launches the simulator, the Quest teleop and the recorder in order and shows their state. Run the command from the robot_remote folder.</p>
+  <div class="copyrow"><pre><code id="c-gui">./launcher/run_gui.sh</code></pre><button type="button" data-copy="c-gui">Copy</button></div>
   <div class="stepper" data-stepper="run">
     <ol class="steplist"></ol>
     <div class="stepbody">
@@ -472,13 +473,15 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
     </ul>
   </div>
   <div data-panel="r-check" hidden>
+    <p>Run from the robot_remote folder. Use the dataset name and <strong>Save location</strong> you set in the launcher for <code>--name</code> and <code>--root</code>; the dataset must already have at least one saved episode.</p>
     <p>The replay tool streams an episode's recorded actions back into Isaac and compares the result with the recorded states. Start Isaac on its own (no Quest teleop), then:</p>
-    <div class="copyrow"><pre><code id="c-replay">~/robot_remote/dual_arm_sim/run_dual_arm_sim.sh --headless &amp;
-~/robot_remote/recording/run_replay.sh --name dual_rebel_task --episode 0</code></pre><button type="button" data-copy="c-replay">Copy</button></div>
+    <div class="copyrow"><pre><code id="c-replay">./dual_arm_sim/run_dual_arm_sim.sh --headless &amp;
+./recording/run_replay.sh --name dual_rebel_task --root ~/datasets --episode 0</code></pre><button type="button" data-copy="c-replay">Copy</button></div>
     <p class="note ok">Healthy: mean error well under 1° and best-fit frame shift <strong>0</strong>. Our reference run: mean 0.05°, max 1.7°, shift 0.</p>
     <p>Load it in Python like any LeRobot dataset:</p>
     <div class="copyrow"><pre><code id="c-load">from lerobot.datasets.lerobot_dataset import LeRobotDataset
-ds = LeRobotDataset("local/dual_rebel_task", root="~/datasets/dual_rebel_task")</code></pre><button type="button" data-copy="c-load">Copy</button></div>
+from pathlib import Path
+ds = LeRobotDataset("local/dual_rebel_task", root=Path("~/datasets/dual_rebel_task").expanduser())</code></pre><button type="button" data-copy="c-load">Copy</button></div>
   </div>
 </section>
 
@@ -598,7 +601,7 @@ ds = LeRobotDataset("local/dual_rebel_task", root="~/datasets/dual_rebel_task")<
       <li><strong>Isaac Sim</strong> uses its own bundled Python and its own ROS 2 libraries. Never source <code>/opt/ros</code> in its terminal.</li>
       <li><strong>Recorder</strong> uses LeRobot 0.5.1 (Python 3.12) with Isaac's Python-3.12 <code>rclpy</code>, so datasets are written by the LeRobot version that trains on them.</li>
     </ul>
-    <p class="note danger"><strong>Keep ROS private.</strong> Before any manual <code>ros2</code> command, run <code>source ~/robot_remote/ros_env.sh</code>. Otherwise you are on domain 0 with the other lab machine.</p>
+    <p class="note danger"><strong>Keep ROS private.</strong> Before any manual <code>ros2</code> command, run <code>source ./ros_env.sh</code>. Otherwise you are on domain 0 with the other lab machine.</p>
   </div>
 </section>
 
@@ -643,6 +646,8 @@ ds = LeRobotDataset("local/dual_rebel_task", root="~/datasets/dual_rebel_task")<
   <label for="tsearch" hidden>Search symptoms</label>
   <input id="tsearch" class="search" type="search" placeholder="Search a symptom, e.g. connect, freeze, ros2">
   <div id="qas">
+    <details class="qa"><summary><code>No such file or directory</code> when running a script</summary><div>The commands in this manual start with <code>./</code> and run from the robot_remote folder. <code>cd</code> into your clone first (for example <code>cd ~/robot_remote</code>), or put the full path in front.</div></details>
+    <details class="qa"><summary>Replay says the dataset does not exist</summary><div>Pass the same name and Save location as in the launcher: <code>--name &lt;dataset name&gt; --root &lt;save location&gt;</code>. Record and save at least one episode first.</div></details>
     <details class="qa"><summary>The Quest page cannot connect</summary><div>Same Wi-Fi as the workstation? Server IP current (the launcher shows it)? Certificate accepted again after an IP change? Firewall ports open (Install → Network)?</div></details>
     <details class="qa"><summary>Teleop dot stays amber after Connect</summary><div>Enter the immersive session, switch both controllers on and hold them in front of the headset.</div></details>
     <details class="qa"><summary>The arm does not move when I hold grip</summary><div>Is that arm ticked in the launcher? Does the messages panel show <code>engaged</code>? Is <code>start_right_arm_moveit.sh</code> running? Stop it: its controller fights the teleop.</div></details>
@@ -650,7 +655,7 @@ ds = LeRobotDataset("local/dual_rebel_task", root="~/datasets/dual_rebel_task")<
     <details class="qa"><summary>Moving up makes the arm go down (axes mirrored)</summary><div>Check the <em>Stance</em> setting. <em>Facing the robot</em> mirrors the axes and swaps hands.</div></details>
     <details class="qa"><summary>Recorder shows "stale stream"</summary><div>A source stopped publishing. Check the status dots and the logs (<em>Open log folder</em>).</div></details>
     <details class="qa"><summary>Recording only has a few frames, or the time jumps</summary><div>A foreign <code>/clock</code> is mixing in. Every terminal must use <code>ros_env.sh</code> (domain 42, localhost only). The recorder warns when the clock jumps by more than 1 s.</div></details>
-    <details class="qa"><summary><code>ros2 topic list</code> shows nothing</summary><div>The terminal is on domain 0. Run <code>source ~/robot_remote/ros_env.sh</code> first.</div></details>
+    <details class="qa"><summary><code>ros2 topic list</code> shows nothing</summary><div>The terminal is on domain 0. Run <code>source ./ros_env.sh</code> first.</div></details>
     <details class="qa"><summary>RViz MTC panel error / MoveIt library mismatch</summary><div>ROS packages from two releases are mixed. Run <code>sudo apt install --only-upgrade -y 'ros-humble-*'</code>, then rebuild with <code>setup/install_ros_ws.sh</code>.</div></details>
     <details class="qa"><summary>Isaac Sim starts but the arms never move</summary><div>Did Isaac start from a terminal with <code>/opt/ros</code> sourced? Use <code>run_dual_arm_sim.sh</code> in a fresh terminal. Run <code>setup/check_env.sh</code>.</div></details>
     <details class="qa"><summary>Isaac Sim takes minutes to open the first time</summary><div>It compiles shaders on first start. Later starts take 30–60 s.</div></details>

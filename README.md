@@ -19,22 +19,22 @@ sudo apt install -y ros-humble-desktop ros-humble-xacro python3-colcon-common-ex
 # 2. uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 # 3. this repo
-gh repo clone Patrick-zhuyanxun/robot_remote ~/robot_remote
+gh repo clone Patrick-zhuyanxun/robot_remote ~/robot_remote && cd ~/robot_remote   # all commands below run from here
 # 4. Isaac Sim 6.1 -> ~/isaac-sim-6.1 (or export ISAAC_SIM=...)
 curl -L -o ~/Downloads/isaac-sim-6.1.0.zip https://downloads.isaacsim.nvidia.com/isaac-sim-standalone-6.1.0-linux-x86_64.zip
 mkdir -p ~/isaac-sim-6.1 && unzip -q ~/Downloads/isaac-sim-6.1.0.zip -d ~/isaac-sim-6.1
 # 5-7. ROS workspace (clone + patch + build), Quest env (+ CloudXR EULA), recorder env
-~/robot_remote/setup/install_ros_ws.sh
-~/robot_remote/setup/install_quest_env.sh
-~/robot_remote/setup/install_record_env.sh      # or: export LEROBOT_PY=<your lerobot 0.5.x python>
+./setup/install_ros_ws.sh
+./setup/install_quest_env.sh
+./setup/install_record_env.sh      # or: export LEROBOT_PY=<your lerobot 0.5.x python>
 # 8. check
-~/robot_remote/setup/check_env.sh
+./setup/check_env.sh
 ```
 
 ## Quick start (GUI)
 
 ```bash
-~/robot_remote/launcher/run_gui.sh
+./launcher/run_gui.sh
 ```
 
 1. Pick the arms, cameras, task text, dataset name and save location, then press **Start**.
@@ -84,7 +84,7 @@ Quest 3/3S ──Wi-Fi/WebRTC──► CloudXR runtime ─┐
 
 All launchers source `ros_env.sh` (**ROS_DOMAIN_ID=42, ROS_LOCALHOST_ONLY=1**). Another machine on the
 LAN runs the same rig on domain 0; without this our commands drive its arms and its `/clock` corrupts
-recordings. Run `source ~/robot_remote/ros_env.sh` before any manual `ros2 …` command.
+recordings. Run `source ./ros_env.sh` before any manual `ros2 …` command.
 
 ## Dataset format
 
@@ -106,7 +106,7 @@ motion even though Isaac runs below real time (≈0.5× with three cameras).
 | `dual_arm_sim/run_dual_arm_sim.sh [--cameras head wrist_left wrist_right] [--headless]` | Isaac Sim rig + ROS 2 bridge. Do not source `/opt/ros` in this terminal. |
 | `quest_teleop/run_quest_dual_arm.sh [--arms left right] [--yaw-deg 180 --swap-hands]` | Quest → both arms, direct to Isaac. |
 | `recording/run_record.sh --name N --task "…"` | Recorder. Keyboard fallback: Enter = start/save, d = discard, q = quit. |
-| `recording/run_replay.sh --name N --episode K` | Replays recorded actions into Isaac and compares with recorded states (alignment check). |
+| `recording/run_replay.sh --name N --root <save location> --episode K` | Replays recorded actions into Isaac and compares with recorded states (alignment check). |
 | `quest_teleop/run_teleop_viz.sh` | RViz view of the teleop frames (arm bases, control point, hand-motion axes). |
 | `dual_arm_sim/start_right_arm_moveit.sh` | MoveIt/RViz planning for the right arm (do not run together with Quest teleop). |
 
