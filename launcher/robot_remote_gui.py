@@ -22,6 +22,8 @@ import webbrowser
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+HOME_DEG = [0, 0, 100, 0, 50, 0]  # = quest_teleop/quest_arm_teleop.py HOME_DEG (teleop start pose)
+
 ROOT = Path(__file__).resolve().parents[1]
 LOG_DIR = ROOT / "logs"
 CONFIG = Path.home() / ".config" / "robot_remote_launcher.json"
@@ -31,6 +33,7 @@ DEFAULTS = {
     "target": "isaac", "arms": ["left", "right"], "cameras": ["head", "wrist_left", "wrist_right"],
     "record": True, "name": "dual_rebel_task", "task": "pick up the box",
     "root": os.environ.get("ROBOT_REMOTE_DATASETS", str(Path.home() / "datasets")), "resolution": "640x480", "fps": 30, "yaw_deg": 0,
+    "real_side": "left", "real_domain": 11, "real_home": False, "real_dry_run": False,
 }
 C = {"bg": "#1f2329", "panel": "#2a2f37", "fg": "#e8e8e8", "dim": "#9aa3ad", "accent": "#4ea1ff",
      "ok": "#3fb950", "warn": "#d29922", "err": "#f85149", "rec": "#ff3b30"}
@@ -146,8 +149,30 @@ class App(tk.Tk):
         g.pack(fill="x", pady=4)
         self.v_target = tk.StringVar(value=self.cfg["target"])
         ttk.Radiobutton(g, text="Isaac Sim dual-arm simulation", value="isaac", variable=self.v_target).pack(anchor="w", padx=8)
-        ttk.Radiobutton(g, text="Real igus ReBeL dual arm (not supported yet - reserved)", value="real",
-                        variable=self.v_target, state="disabled").pack(anchor="w", padx=8, pady=(0, 4))
+        ttk.Radiobutton(g, text="Real igus ReBeL arm (one arm, teleop only - no recording yet)", value="real",
+                        variable=self.v_target).pack(anchor="w", padx=8)
+        self.real_box = ttk.Frame(g)
+        self.real_box.pack(fill="x", padx=28, pady=(0, 4))
+        row = ttk.Frame(self.real_box)
+        row.pack(anchor="w")
+        ttk.Label(row, text="Arm").pack(side="left")
+        self.v_real_side = tk.StringVar(value=self.cfg["real_side"])
+        for side in ("left", "right"):
+            ttk.Radiobutton(row, text=f"{side} (driven by the {side} controller)", value=side,
+                            variable=self.v_real_side).pack(side="left", padx=6)
+        ttk.Label(row, text="ROS_DOMAIN_ID").pack(side="left", padx=(14, 4))
+        self.v_real_domain = tk.StringVar(value=str(self.cfg["real_domain"]))
+        ttk.Entry(row, textvariable=self.v_real_domain, width=4).pack(side="left")
+        row = ttk.Frame(self.real_box)
+        row.pack(anchor="w")
+        self.v_real_home = tk.BooleanVar(value=self.cfg["real_home"])
+        ttk.Checkbutton(row, text=f"First move slowly to the start pose {HOME_DEG} deg (the arm moves on its own!)",
+                        variable=self.v_real_home).pack(side="left")
+        self.v_real_dry = tk.BooleanVar(value=self.cfg["real_dry_run"])
+        ttk.Checkbutton(row, text="Dry run (connect, send nothing)", variable=self.v_real_dry).pack(side="left", padx=14)
+        ttk.Label(self.real_box, text="Slow limits: 20 deg/s per joint, 0.15 m/s, 30 deg/s. The robot driver must already run "
+                                      "on its PC; Fast DDS over the LAN.", style="Dim.TLabel").pack(anchor="w")
+        self.v_target.trace_add("write", lambda *_: self._target_changed())
 
         g = ttk.LabelFrame(left, text="2  Arms to control")
         g.pack(fill="x", pady=4)
@@ -159,6 +184,7 @@ class App(tk.Tk):
 
         g = ttk.LabelFrame(left, text="3  Cameras (enabled in the sim and recorded)")
         g.pack(fill="x", pady=4)
+        cam_box = g
         self.v_cams = {k: tk.BooleanVar(value=k in self.cfg["cameras"]) for k, _ in CAMERAS}
         row = ttk.Frame(g)
         row.pack(anchor="w", padx=8, pady=4)
@@ -197,6 +223,7 @@ class App(tk.Tk):
         for v in (self.v_name, self.v_root):
             v.trace_add("write", lambda *_: self._update_path_hint())
         self._update_path_hint()
+        self.record_widgets = [w for w in self._descendants(g)] + [w for w in self._descendants(cam_box)]
 
         g = ttk.LabelFrame(left, text="5  Quest connection")
         g.pack(fill="x", pady=4)
@@ -220,7 +247,29 @@ class App(tk.Tk):
 
         ttk.Label(right, text="Quest controller", style="Big.TLabel").pack(anchor="w")
         self._legend(right).pack(pady=6)
+        self.after(0, self._target_changed)
         return f
+
+    @staticmethod
+    def _descendants(w):
+        out = []
+        for c in w.winfo_children():
+            out.append(c)
+            out += App._descendants(c)
+        return out
+
+    def _target_changed(self):
+        real = self.v_target.get() == "real"
+        for w in self._descendants(self.real_box):
+            try:
+                w.configure(state="normal" if real else "disabled")
+            except tk.TclError:
+                pass
+        for w in self.record_widgets:
+            try:
+                w.configure(state="disabled" if real else ("readonly" if isinstance(w, ttk.Combobox) else "normal"))
+            except tk.TclError:
+                pass
 
     def open_replay(self):
         from replay_window import ReplayWindow
@@ -277,10 +326,17 @@ class App(tk.Tk):
         arms = [s for s, v in self.v_arms.items() if v.get()]
         cams = [k for k, v in self.v_cams.items() if v.get()]
         w, h = self.v_res.get().split("x")
-        cfg = {"target": self.v_target.get(), "arms": arms, "cameras": cams, "record": self.v_record.get(),
+        real = self.v_target.get() == "real"
+        if real:
+            arms, cams = [self.v_real_side.get()], []
+        cfg = {"target": self.v_target.get(), "arms": arms, "cameras": cams, "record": self.v_record.get() and not real,
                "name": self.v_name.get().strip(), "task": self.v_task.get().strip(), "root": self.v_root.get().strip(),
                "resolution": self.v_res.get(), "fps": int(self.v_fps.get()), "yaw_deg": int(self.v_yaw.get()),
-               "width": int(w), "height": int(h)}
+               "width": int(w), "height": int(h), "real_side": self.v_real_side.get(),
+               "real_domain": int(self.v_real_domain.get() or 11) if self.v_real_domain.get().isdigit() else -1,
+               "real_home": self.v_real_home.get(), "real_dry_run": self.v_real_dry.get()}
+        if real and not 0 <= cfg["real_domain"] <= 232:
+            raise ValueError("ROS_DOMAIN_ID must be a number 0-232")
         if not arms:
             raise ValueError("Select at least one arm")
         if cfg["record"]:
@@ -295,6 +351,15 @@ class App(tk.Tk):
             cfg = self._collect()
         except ValueError as e:
             messagebox.showerror("Invalid settings", str(e))
+            return
+        if cfg["target"] == "real" and not cfg["real_dry_run"] and not messagebox.askyesno(
+                "Real robot", f"You are about to drive the REAL {cfg['real_side']} arm (ROS_DOMAIN_ID {cfg['real_domain']}).\n\n"
+                "- Someone stands at the e-stop.\n- The workspace is clear of people and objects.\n"
+                "- MoveIt / Servo on the robot PC are not sending commands.\n"
+                + ("- The arm will first move ON ITS OWN to the start pose.\n" if cfg["real_home"] else
+                   "- The arm starts from where it is now. All-zero (straight up) is a singular pose:\n"
+                   "  move it to a bent pose first, or tick 'First move slowly to the start pose'.\n")
+                + "\nThe arm only moves while you hold GRIP. Continue?", icon="warning"):
             return
         CONFIG.parent.mkdir(parents=True, exist_ok=True)
         CONFIG.write_text(json.dumps({k: v for k, v in cfg.items() if k in DEFAULTS}, ensure_ascii=False, indent=1))
@@ -320,7 +385,8 @@ class App(tk.Tk):
         g = ttk.LabelFrame(left, text="Processes")
         g.pack(fill="x", pady=4)
         self.status = {}
-        for key, label in (("sim", "Isaac simulation"), ("teleop", "Quest teleop (CloudXR)"), ("record", "Data recorder")):
+        sim_label = "Real robot link" if cfg["target"] == "real" else "Isaac simulation"
+        for key, label in (("sim", sim_label), ("teleop", "Quest teleop (CloudXR)"), ("record", "Data recorder")):
             row = ttk.Frame(g)
             row.pack(fill="x", padx=8, pady=2)
             dot = tk.Label(row, text="●", fg=C["dim"], bg=C["bg"], font=("Arial", 14))
@@ -366,11 +432,39 @@ class App(tk.Tk):
             time.sleep(0.5)
         return False
 
+    def _launch_real(self):
+        cfg = self.cfg
+        self._set("sim", C["dim"], "not used (real robot)")
+        self._set("record", C["dim"], "not available on the real robot yet")
+        cmd = [str(ROOT / "quest_teleop" / "run_quest_real_arm.sh"), "--arms", cfg["real_side"],
+               "--yaw-deg", str(cfg["yaw_deg"]), "--quiet"]
+        if cfg["yaw_deg"] == 180:
+            cmd.append("--swap-hands")
+        if cfg["real_home"]:
+            cmd.append("--real-home")
+        if cfg["real_dry_run"]:
+            cmd.append("--dry-run")
+        self._set("teleop", C["warn"], f"connecting to the robot (ROS_DOMAIN_ID {cfg['real_domain']})...")
+        self.procs["teleop"] = Proc("teleop", cmd, self._on_line,
+                                    extra_env={"ROBOT_REMOTE_REAL_DOMAIN_ID": str(cfg["real_domain"])})
+        p = self.procs["teleop"]
+        if not self._wait_for(p, r"real arm connected", 60):
+            self._set("teleop", C["err"], "no /joint_states from the robot within 60 s - is its driver running? "
+                                          f"log: {p.log_path.name}")
+            return
+        self._set("sim", C["ok"], "robot connected")
+        if cfg["real_home"] and not cfg["real_dry_run"]:
+            self._set("teleop", C["warn"], "moving the arm to the start pose...")
+        if not self._wait_for(p, r"CloudXR up", 180):
+            self._set("teleop", C["err"], f"failed to start - see log: {p.log_path}")
+            return
+        self._set("teleop", C["warn"], f"waiting for the Quest (Server IP {lan_ip()})")
+        self.events.put(("rec", "real", 0))
+
     def _launch_sequence(self):
         cfg = self.cfg
-        if cfg["target"] != "isaac":
-            self._msg("Real-robot mode is not supported yet")
-            return
+        if cfg["target"] == "real":
+            return self._launch_real()
         sim_cmd = [str(ROOT / "dual_arm_sim" / "run_dual_arm_sim.sh"), "--cam-width", str(cfg["width"]),
                    "--cam-height", str(cfg["height"])]
         if cfg["cameras"]:
@@ -411,6 +505,9 @@ class App(tk.Tk):
             self.events.put(("rec", "teleop", 0))
 
     def _on_line(self, name, line):
+        if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go",
+                                                         "start pose", "dry run")):
+            self._msg(f"[robot] {line.split(']: ')[-1]}")
         if name == "teleop":
             if "TRACKED" in line and "LOST" not in line:
                 self._set("teleop", C["ok"], "Quest connected, controllers tracked")
@@ -475,6 +572,9 @@ class App(tk.Tk):
             self._set("record", C["ok"], f"ready ({n} episodes saved)")
         elif state == "teleop":
             self.rec_label.configure(text="TELEOP (not recording)", bg=C["panel"])
+        elif state == "real":
+            self.rec_label.configure(text=f"REAL {self.cfg['real_side'].upper()} ARM" +
+                                     ("  (dry run)" if self.cfg["real_dry_run"] else "  - hold GRIP to move"), bg=C["warn"])
 
     def stop_all(self):
         if not self.procs:

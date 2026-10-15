@@ -212,7 +212,7 @@ details.qa div { padding: 0 14px 12px; }
     <div class="board">
       <button class="tile r" type="button" data-go="flow"><span class="ico">⇄</span><span><b>Data flow</b><span>Which program sends what to whom. Click a box for details; topics and dataset format.</span></span></button>
       <button class="tile r" type="button" data-go="tools"><span class="ico">≡</span><span><b>Scripts &amp; limits</b><span>Every launcher script, its options, and known limitations.</span></span></button>
-      <button class="tile r" type="button" data-go="real"><span class="ico">⚙</span><span><b>Real robot</b><span>Reserved. Not implemented yet: what still has to be defined.</span></span></button>
+      <button class="tile r" type="button" data-go="real"><span class="ico">⚙</span><span><b>Real robot</b><span>Drive one real ReBeL arm with the Quest (teleop only), and what is still missing.</span></span></button>
     </div>
   </div>
 </section>
@@ -386,7 +386,7 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
         <h2>Fill in the settings</h2>
         <table>
           <tbody>
-            <tr><th>Target</th><td>Isaac Sim. <em>Real robot</em> is shown but disabled (reserved).</td></tr>
+            <tr><th>Target</th><td>Isaac Sim, or one real ReBeL arm (see <a href="#real" data-go="real">Real robot</a>; teleop only).</td></tr>
             <tr><th>Arms</th><td>Left, right or both.</td></tr>
             <tr><th>Cameras</th><td>Head, left wrist, right wrist. Fewer cameras make the simulation run faster.</td></tr>
             <tr><th>Resolution / FPS</th><td>Default 640×480 at 30 fps.</td></tr>
@@ -657,6 +657,8 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
   <div id="qas">
     <details class="qa"><summary><code>No such file or directory</code> when running a script</summary><div>The commands in this manual start with <code>./</code> and run from the robot_remote folder. <code>cd</code> into your clone first (for example <code>cd ~/robot_remote</code>), or put the full path in front.</div></details>
     <details class="qa"><summary>Playback window: "cannot read the dataset" / missing meta/episodes</summary><div>The folder was moved or renamed while the recorder was still finalizing. Look for a leftover <code>&lt;name&gt;/meta/episodes/</code> folder at the old Save location and move it into the dataset's <code>meta/</code>.</div></details>
+    <details class="qa"><summary>Real arm: "no /joint_states from the robot"</summary><div>Is the driver running on the robot PC? Same ROS_DOMAIN_ID (11)? Both PCs on the same network? Check by hand: <code>ROBOT_REMOTE_TARGET=real source ./ros_env.sh &amp;&amp; ros2 topic echo /joint_states --once --no-daemon</code>.</div></details>
+    <details class="qa"><summary>Real arm: "let go" warnings</summary><div>Joint states stopped for over 0.5 s (Wi-Fi) or the arm lagged its command by over 15°. Release grip and grip again. A wired connection helps.</div></details>
     <details class="qa"><summary>The Quest page cannot connect</summary><div>Same Wi-Fi as the workstation? Server IP current (the launcher shows it)? Certificate accepted again after an IP change? Firewall ports open (Install → Network)?</div></details>
     <details class="qa"><summary>Teleop dot stays amber after Connect</summary><div>Enter the immersive session, switch both controllers on and hold them in front of the headset.</div></details>
     <details class="qa"><summary>The arm does not move when I hold grip</summary><div>Is that arm ticked in the launcher? Does the messages panel show <code>engaged</code>? Is <code>start_right_arm_moveit.sh</code> running? Stop it: its controller fights the teleop.</div></details>
@@ -673,25 +675,53 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
 </section>
 
 <!-- ======================= REAL ======================= -->
-<section class="page" data-page="real" data-title="Real robot (reserved)" hidden>
+<section class="page" data-page="real" data-title="Real robot" hidden>
   <p class="eyebrow">How it works</p>
   <h1>Real robot</h1>
-  <div class="reserved">
-    <p><span class="tag">Reserved · not implemented</span></p>
-    <p>The launcher's <em>Real igus ReBeL dual arm</em> option is disabled. The dataset format is meant to stay the same, so policies trained on simulated data can run on the hardware. This page collects what still has to be decided and written.</p>
-    <div class="tbl">
-      <table>
+  <div class="tabs" role="tablist">
+    <button type="button" role="tab" data-tab="x-run" aria-selected="true">Drive the real arm</button>
+    <button type="button" role="tab" data-tab="x-how" aria-selected="false">How it connects</button>
+    <button type="button" role="tab" data-tab="x-todo" aria-selected="false">Not done yet</button>
+  </div>
+  <div data-panel="x-run">
+    <p class="note danger"><strong>One person stands at the e-stop</strong> the whole time. The workspace is clear. MoveIt / Servo on the robot PC send no commands.</p>
+    <ol>
+      <li>On the robot PC, the igus ReBeL driver is running (<code>/igus_rebel</code>, <code>rebel_arm_trajectory_controller</code>).</li>
+      <li>In the launcher choose <strong>Target → Real igus ReBeL arm</strong>, the arm (<em>left</em> or <em>right</em>) and <code>ROS_DOMAIN_ID</code> (11).</li>
+      <li>First time: tick <strong>Dry run</strong> and press Start. The status shows <em>robot connected</em> and the current joint angles; nothing is sent. Stop all.</li>
+      <li>If the arm is straight up (all joints 0°, a singular pose), tick <strong>First move slowly to the start pose</strong> (0, 0, 100, 0, 50, 0)°, or move it to a bent pose with the robot's own tools.</li>
+      <li>Untick Dry run, press Start, confirm the safety dialog, connect the Quest. The arm moves <strong>only while you hold GRIP</strong> on that arm's controller.</li>
+    </ol>
+    <p>Limits on the real arm: 20°/s per joint, 0.15 m/s, 30°/s. The teleop lets go (stops sending) when the joint states stop arriving for 0.5 s or a joint lags its command by more than 15°; release and grip again to continue. No gripper, no recording yet.</p>
+    <p>Without the launcher, from the robot_remote folder:</p>
+    <div class="copyrow"><pre><code id="c-real">./quest_teleop/run_quest_real_arm.sh --arms left --dry-run
+./quest_teleop/run_quest_real_arm.sh --arms left --real-home</code></pre><button type="button" data-copy="c-real">Copy</button></div>
+  </div>
+  <div data-panel="x-how" hidden>
+    <div class="tbl"><table>
+      <tbody>
+        <tr><th>Network</th><td>LAN, <code>ROS_DOMAIN_ID=11</code>, Fast DDS (<code>rmw_fastrtps_cpp</code>; Cyclone DDS does not see the robot). <code>ROBOT_REMOTE_TARGET=real</code> makes <code>ros_env.sh</code> set this.</td></tr>
+        <tr><th>State in</th><td><code>/joint_states</code>, <code>joint1..6</code>, about 75 Hz</td></tr>
+        <tr><th>Command out</th><td><code>/rebel_arm_trajectory_controller/joint_trajectory</code>: one point per tick (30 Hz), reached 0.15 s after it is sent. When messages stop, the controller finishes the last short segment and holds.</td></tr>
+        <tr><th>Mapping</th><td>Same as the sim: flange control point, translation in the arm-base axes, rotation in the tool frame. One Quest controller drives the one real arm.</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Over Wi-Fi the joint states arrive with gaps of up to 0.7 s, so the teleop may let go now and then. Use a wired connection for smoother control. For manual <code>ros2</code> commands: <code>ROBOT_REMOTE_TARGET=real source ./ros_env.sh</code>.</p>
+  </div>
+  <div data-panel="x-todo" hidden>
+    <div class="reserved">
+      <p><span class="tag">Reserved · not implemented</span></p>
+      <div class="tbl"><table>
         <thead><tr><th>Item</th><th>Status</th></tr></thead>
         <tbody>
-          <tr><td>Hardware driver per arm (<code>igus_rebel</code> CRI, <code>hardware_protocol:=rebel</code>)</td><td>to be defined</td></tr>
-          <tr><td>Network: controller IP per arm, wired LAN, latency budget</td><td>to be defined</td></tr>
-          <tr><td>Safety: speed limits, workspace limits, e-stop procedure, two-person rule</td><td>to be defined</td></tr>
-          <tr><td>Calibration: arm base poses on the stand, TCP of the real gripper</td><td>to be defined</td></tr>
+          <tr><td>Both real arms at once</td><td>to be defined</td></tr>
+          <tr><td>Recording real episodes (same 14-D state/action, real cameras)</td><td>to be defined</td></tr>
           <tr><td>Gripper driver and the 0–1 closedness mapping</td><td>to be defined</td></tr>
-          <tr><td>Camera drivers replacing the Isaac image topics (same names and resolution)</td><td>to be defined</td></tr>
-          <tr><td>Operator checklist before enabling the arms</td><td>to be defined</td></tr>
+          <tr><td>Workspace limits / collision check against the stand and table</td><td>to be defined</td></tr>
+          <tr><td>Calibration: arm base poses on the stand, TCP of the real gripper</td><td>to be defined</td></tr>
+          <tr><td>Wired network and latency budget</td><td>to be defined</td></tr>
         </tbody>
-      </table>
+      </table></div>
     </div>
   </div>
 </section>

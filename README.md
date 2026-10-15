@@ -115,12 +115,13 @@ motion even though Isaac runs below real time (≈0.5× with three cameras).
 | `quest_teleop/run_teleop_viz.sh` | RViz view of the teleop frames (arm bases, control point, hand-motion axes). |
 | `dual_arm_sim/start_right_arm_moveit.sh` | MoveIt/RViz planning for the right arm (do not run together with Quest teleop). |
 
-## Real robot (reserved)
+## Real robot (one arm, teleop only)
 
-Not implemented. To be filled in when the hardware backend exists:
-hardware driver (`igus_rebel` CRI, `hardware_protocol:=rebel`), network/IP per arm, safety limits and
-e-stop procedure, calibration of the two arm bases, mapping of the same 14-D state/action to the real
-joints and gripper, and the camera drivers that replace the Isaac image topics.
+Launcher → **Target: Real igus ReBeL arm**, or `./quest_teleop/run_quest_real_arm.sh --arms left [--dry-run] [--real-home]`.
+Connects on ROS_DOMAIN_ID 11 with Fast DDS over the LAN (`ROBOT_REMOTE_TARGET=real` in `ros_env.sh`), reads
+`/joint_states` and streams 30 Hz single-point trajectories to `/rebel_arm_trajectory_controller/joint_trajectory`
+only while GRIP is held. Limits 20°/s per joint, 0.15 m/s, 30°/s; lets go on stale joint states (>0.5 s) or tracking
+error (>15°). Not done yet: both arms, gripper, recording real episodes, workspace limits. Keep someone at the e-stop.
 
 ## Known limitations
 

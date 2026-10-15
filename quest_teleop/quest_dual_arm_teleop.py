@@ -13,9 +13,15 @@ write the right arm and yank it back.
 Controls (per hand): hold SQUEEZE to move that arm, release to freeze it; TRIGGER closes its gripper.
 
   robot_remote/quest_teleop/run_quest_dual_arm.sh
+
+--backend real drives ONE real igus ReBeL instead (ROS 2 domain from ros_env.sh with ROBOT_REMOTE_TARGET=real):
+reads /joint_states (joint1..6) and streams short trajectories to the arm's joint_trajectory_controller,
+only while the grip is held. Lower default speeds, no home move, no gripper, and it lets go (stops
+sending) when the joint states go stale or the arm stops following.
 """
 
 import argparse
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -25,8 +31,11 @@ import rclpy
 from rclpy.node import Node
 from scipy.spatial.transform import Rotation
 from geometry_msgs.msg import PoseStamped
+from builtin_interfaces.msg import Duration
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
+from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from quest_arm_teleop import ARM_JOINTS, HOME_DEG, TCP_PRESETS, QuestController, SerialChain, step_toward
 
@@ -36,6 +45,10 @@ SIDES = ("left", "right")
 # Arm base poses in the rig/world frame, from dual_arm_rig_v2.usda (sliders and lift at 0).
 ARM_BASE_XYZ = {"left": (0.228209, -0.179297, 1.1093), "right": (-0.231737, -0.179297, 1.1093)}
 ARM_BASE_YAW_DEG = -90.0
+
+# Real-arm defaults (--backend real): slower than the sim, the operator stands next to the robot.
+REAL_DEFAULTS = {"max_joint_vel": 0.35, "max_lin_vel": 0.15, "max_rot_vel": 30.0}
+SIM_DEFAULTS = {"max_joint_vel": 0.785, "max_lin_vel": 0.50, "max_rot_vel": 90.0}
 
 # OpenXR anchor frame is set by quest_arm_teleop.OPERATOR_T_ANCHOR: operator X fwd, Y left, Z up.
 
@@ -74,13 +87,14 @@ class Arm:
 
     def __init__(self, side, chain, args):
         self.side, self.chain, self.args = side, chain, args
-        self.names = [f"arm_{side}_{j}" for j in ARM_JOINTS]
+        self.names = list(ARM_JOINTS) if args.backend == "real" else [f"arm_{side}_{j}" for j in ARM_JOINTS]
         self.grip_names = [f"arm_{side}_xeg32_left_carriage_joint", f"arm_{side}_xeg32_right_carriage_joint"]
         self.shoulder = chain.joint_origin(1)
         self.world_T_base = np.eye(4)
         self.world_T_base[:3, :3] = Rotation.from_euler("z", ARM_BASE_YAW_DEG, degrees=True).as_matrix()
         self.world_T_base[:3, 3] = ARM_BASE_XYZ[side]
         self.q_meas = None
+        self.t_meas = 0.0  # monotonic time of the last joint state
         self.q_cmd = None
         self.engaged = False
         self.tracked = False
@@ -121,7 +135,12 @@ class DualArmTeleop(Node):
         super().__init__("quest_dual_arm_teleop")
         self.args = args
         self.arms = {s: Arm(s, chain, args) for s in args.arms}
-        self.cmd_pub = self.create_publisher(JointState, "/dual_arm/isaac_joint_commands", 10)
+        self.real = args.backend == "real"
+        if self.real:
+            self.traj_pub = self.create_publisher(JointTrajectory, args.real_cmd_topic, 10)
+            self.create_subscription(JointState, args.real_state_topic, self._on_real_js, qos_profile_sensor_data)
+        else:
+            self.cmd_pub = self.create_publisher(JointState, "/dual_arm/isaac_joint_commands", 10)
         # for teleop_viz / RViz: where each arm's TCP is being asked to go (frame <side>/base_link)
         self.target_pub = {s: self.create_publisher(PoseStamped, f"/quest_teleop/{s}/target", 10) for s in args.arms}
         # for record_dataset.py: full 14-D action every tick + episode events from the controller buttons
@@ -129,7 +148,16 @@ class DualArmTeleop(Node):
         self.event_pub = self.create_publisher(String, "/quest_teleop/events", 10)
         self.all_q = {s: None for s in SIDES}       # measured arm joints of BOTH arms (driven or not)
         self.all_grip = {s: 0.0 for s in SIDES}     # measured gripper closedness [0, 1]
-        self.create_subscription(JointState, "/dual_arm/isaac_joint_states", self._on_js, 10)
+        if not self.real:
+            self.create_subscription(JointState, "/dual_arm/isaac_joint_states", self._on_js, 10)
+
+    def _on_real_js(self, msg):
+        d = dict(zip(msg.name, msg.position))
+        if all(j in d for j in ARM_JOINTS):
+            q = np.array([d[j] for j in ARM_JOINTS])
+            for side, arm in self.arms.items():
+                arm.q_meas, arm.t_meas = q, time.monotonic()
+                self.all_q[side] = q
 
     def _on_js(self, msg):
         d = dict(zip(msg.name, msg.position))
@@ -144,6 +172,7 @@ class DualArmTeleop(Node):
         for arm in self.arms.values():
             if all(n in d for n in arm.names):
                 arm.q_meas = np.array([d[n] for n in arm.names])
+                arm.t_meas = time.monotonic()
 
     def spin_for(self, seconds):
         end = time.perf_counter() + seconds
@@ -151,12 +180,23 @@ class DualArmTeleop(Node):
             rclpy.spin_once(self, timeout_sec=0.002)
 
     def wait_ready(self):
+        what = (f"{self.args.real_state_topic} from the real arm (ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}; "
+                "is the robot driver running?)" if self.real else
+                "/dual_arm/isaac_joint_states (is run_dual_arm_sim.sh running?)")
         while rclpy.ok() and any(a.q_meas is None for a in self.arms.values()):
-            self.get_logger().info("waiting for /dual_arm/isaac_joint_states (is run_dual_arm_sim.sh running?)",
-                                   throttle_duration_sec=3.0)
+            self.get_logger().info(f"waiting for {what}", throttle_duration_sec=3.0)
             rclpy.spin_once(self, timeout_sec=0.2)
+        if self.real:
+            q = next(iter(self.arms.values())).q_meas
+            self.get_logger().info(f"real arm connected, joints [deg] {np.round(np.rad2deg(q), 1).tolist()}")
+            n = self.count_publishers(self.args.real_cmd_topic)
+            if n:
+                self.get_logger().warning(f"{n} other publisher(s) on {self.args.real_cmd_topic} (MoveIt / Servo?). "
+                                          "They will fight the teleop if they send commands - stop them first.")
 
     def send(self, cmds: dict, grips: dict | None = None):
+        if self.real:
+            return self.send_real(cmds)
         names, positions = [], []
         for side, q in cmds.items():
             names += self.arms[side].names
@@ -166,6 +206,18 @@ class DualArmTeleop(Node):
             positions += [float(pos), float(pos)]
         if names:
             self.cmd_pub.publish(JointState(name=names, position=positions))
+
+    def send_real(self, cmds: dict):
+        """One short trajectory per tick to the real arm's joint_trajectory_controller: reach the commanded
+        joints in --real-lookahead s. Each new message replaces the previous one; when messages stop (grip
+        released, stale state, Wi-Fi gap) the controller finishes the last short segment and holds."""
+        for side, q in cmds.items():
+            if self.args.dry_run:
+                continue
+            la = self.args.real_lookahead
+            pt = JointTrajectoryPoint(positions=[float(v) for v in q],
+                                      time_from_start=Duration(sec=int(la), nanosec=int((la % 1) * 1e9)))
+            self.traj_pub.publish(JointTrajectory(joint_names=self.arms[side].names, points=[pt]))
 
     def publish_action(self):
         """Commanded joints of both arms (held while released; measured for undriven arms) + gripper closedness."""
@@ -198,6 +250,20 @@ class DualArmTeleop(Node):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--backend", choices=["isaac", "real"], default="isaac",
+                   help="isaac = the simulated dual-arm rig; real = ONE real igus ReBeL (exactly one --arms side)")
+    p.add_argument("--real-state-topic", default="/joint_states", help="real arm: joint states (joint1..6)")
+    p.add_argument("--real-cmd-topic", default="/rebel_arm_trajectory_controller/joint_trajectory",
+                   help="real arm: joint_trajectory_controller command topic")
+    p.add_argument("--real-lookahead", type=float, default=0.15,
+                   help="real arm: each streamed point is reached this many seconds after it is sent")
+    p.add_argument("--state-timeout", type=float, default=0.5,
+                   help="real arm: let go (stop sending) if no joint state arrived for this long [s]")
+    p.add_argument("--max-track-err-deg", type=float, default=15.0,
+                   help="real arm: let go if any joint lags its command by more than this [deg]")
+    p.add_argument("--dry-run", action="store_true", help="real arm: run everything but publish no commands")
+    p.add_argument("--real-home", action="store_true",
+                   help="real arm: first move slowly (8.6 deg/s) to the teleop start pose HOME_DEG; off = start where it is")
     p.add_argument("--arms", nargs="+", choices=SIDES, default=list(SIDES), help="which rig arms to drive")
     p.add_argument("--swap-hands", action="store_true", help="left controller drives the right arm and vice versa")
     p.add_argument("--yaw-deg", type=float, default=0.0,
@@ -209,9 +275,11 @@ def main():
                    help="custom control point in link6 frame [m]; overrides --tcp-preset")
     p.add_argument("--scale", type=float, default=1.0, help="hand->EE translation scale")
     p.add_argument("--rate", type=float, default=30.0)
-    p.add_argument("--max-joint-vel", type=float, default=0.785, help="rad/s per joint (= ReBeL / Isaac drive limit 45 deg/s)")
-    p.add_argument("--max-lin-vel", type=float, default=0.50, help="commanded TCP speed limit [m/s]")
-    p.add_argument("--max-rot-vel", type=float, default=90.0, help="commanded TCP rotation speed limit [deg/s]")
+    p.add_argument("--max-joint-vel", type=float, default=None,
+                   help="rad/s per joint (default 0.785 = 45 deg/s in the sim, 0.35 on the real arm)")
+    p.add_argument("--max-lin-vel", type=float, default=None, help="TCP speed limit [m/s] (default 0.5 sim, 0.15 real)")
+    p.add_argument("--max-rot-vel", type=float, default=None,
+                   help="TCP rotation speed limit [deg/s] (default 90 sim, 30 real)")
     p.add_argument("--rot-frame", choices=["tool", "base"], default="tool",
                    help="tool: twisting the controller spins the tool about its own Z, nodding tilts it "
                         "(controller-local rotation applied in the tool frame); base: hand rotation applied "
@@ -233,6 +301,13 @@ def main():
     p.add_argument("--no-home", action="store_true")
     p.add_argument("--quiet", action="store_true", help="no per-0.5 s axis-check log while engaged")
     args, ros_args = p.parse_known_args()
+    for k, v in (REAL_DEFAULTS if args.backend == "real" else SIM_DEFAULTS).items():
+        if getattr(args, k) is None:
+            setattr(args, k, v)
+    if args.backend == "real":
+        if len(args.arms) != 1:
+            p.error("--backend real drives exactly one arm: pass --arms left or --arms right")
+        args.no_home = not args.real_home  # the real arm moves on its own only when asked to
 
     rclpy.init(args=ros_args)
     tcp = tuple(args.tcp) if args.tcp else TCP_PRESETS[args.tcp_preset]
@@ -240,9 +315,16 @@ def main():
     node = DualArmTeleop(args, chain)
     log = node.get_logger()
     log.info(f"control point ({'custom' if args.tcp else args.tcp_preset}) in link6 = {np.round(tcp, 4).tolist()} m")
+    if args.backend == "real":
+        log.warning(f"REAL ARM ({args.arms[0]}){' DRY RUN - no commands are sent' if args.dry_run else ''}: "
+                    f"joint {np.rad2deg(args.max_joint_vel):.0f} deg/s, TCP {args.max_lin_vel} m/s, "
+                    f"{args.max_rot_vel:.0f} deg/s. Keep the e-stop in reach.")
     node.wait_ready()
     if not args.no_home:
-        node.go_home()
+        if args.backend == "real" and args.dry_run:
+            log.info("dry run: skipping the move to the start pose")
+        else:
+            node.go_home(vel=0.15 if args.backend == "real" else 0.4)
     node.spin_for(0.2)
     for arm in node.arms.values():
         arm.q_cmd = arm.q_meas.copy()
@@ -273,6 +355,19 @@ def main():
                     arm.tracked = tracked
                 if not tracked:
                     arm.engaged = False
+                    continue
+                if node.real and arm.engaged:
+                    age = time.monotonic() - arm.t_meas
+                    lag = np.rad2deg(np.max(np.abs(arm.q_cmd - arm.q_meas)))
+                    if age > args.state_timeout or lag > args.max_track_err_deg:
+                        arm.engaged = False
+                        arm.need_regrip = True
+                        log.warning(f"[{side}] let go: " + (f"no joint state for {age:.2f} s (network?)" if age > args.state_timeout
+                                    else f"arm lags its command by {lag:.0f} deg") + " - release and grip again")
+                        continue
+                if getattr(arm, "need_regrip", False):
+                    if squeeze < args.clutch:
+                        arm.need_regrip = False
                     continue
                 p_b = r_base_op.apply(pos)
                 r_b = r_base_op * Rotation.from_quat(quat) * r_base_op.inv()
@@ -347,7 +442,7 @@ def main():
                     ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z, ps.pose.orientation.w = (
                         float(qx), float(qy), float(qz), float(qw))
                     node.target_pub[side].publish(ps)
-                if arm.last_trig is None or abs(trigger - arm.last_trig) > 0.01:
+                if not node.real and (arm.last_trig is None or abs(trigger - arm.last_trig) > 0.01):
                     grips[side] = args.gripper_open + (args.gripper_closed - args.gripper_open) * trigger
                     arm.last_trig = trigger
 
