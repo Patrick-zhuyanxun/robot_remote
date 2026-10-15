@@ -10,3 +10,4 @@ logs/
 setup/*.log
 dataset/
 datasets/
+config/launcher.json

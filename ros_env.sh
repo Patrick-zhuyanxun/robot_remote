@@ -10,6 +10,8 @@
 # Use the same values in any extra terminal where you run `ros2 ...` by hand:
 #   source <path-to>/robot_remote/ros_env.sh                          # simulation
 #   ROBOT_REMOTE_TARGET=real source <path-to>/robot_remote/ros_env.sh # real arm
+# The new ROBOT_REMOTE_TARGET=ethernet path uses the local graph below for diagnostics only.
+# Hardware commands / feedback go directly over TCP; "real" above is the legacy single-arm ROS path.
 if [ "${ROBOT_REMOTE_TARGET:-sim}" = "real" ]; then
   export ROS_DOMAIN_ID="${ROBOT_REMOTE_REAL_DOMAIN_ID:-11}"
   export RMW_IMPLEMENTATION=rmw_fastrtps_cpp

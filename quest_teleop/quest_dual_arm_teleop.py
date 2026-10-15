@@ -14,14 +14,14 @@ Controls (per hand): hold SQUEEZE to move that arm, release to freeze it; TRIGGE
 
   robot_remote/quest_teleop/run_quest_dual_arm.sh
 
---backend real drives ONE real igus ReBeL instead (ROS 2 domain from ros_env.sh with ROBOT_REMOTE_TARGET=real):
-reads /joint_states (joint1..6) and streams short trajectories to the arm's joint_trajectory_controller,
-only while the grip is held. Lower default speeds, no home move, no gripper, and it lets go (stops
-sending) when the joint states go stale or the arm stops following.
+--backend real connects both real ReBeLs directly over Ethernet (CRI + Position Interface).
+--backend real-ros preserves the older, single-arm ROS trajectory backend.
+Real backends use slower limits, start at the measured pose, and do not command grippers.
 """
 
 import argparse
 import os
+import signal
 import subprocess
 import time
 from pathlib import Path
@@ -38,6 +38,7 @@ from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from quest_arm_teleop import ARM_JOINTS, HOME_DEG, TCP_PRESETS, QuestController, SerialChain, step_toward
+from ethernet_rebel import DEFAULT_CONFIG, EthernetArms, RobotError, load_endpoints
 
 HERE = Path(__file__).resolve().parent
 SIDES = ("left", "right")
@@ -87,7 +88,7 @@ class Arm:
 
     def __init__(self, side, chain, args):
         self.side, self.chain, self.args = side, chain, args
-        self.names = list(ARM_JOINTS) if args.backend == "real" else [f"arm_{side}_{j}" for j in ARM_JOINTS]
+        self.names = list(ARM_JOINTS) if args.backend != "isaac" else [f"arm_{side}_{j}" for j in ARM_JOINTS]
         self.grip_names = [f"arm_{side}_xeg32_left_carriage_joint", f"arm_{side}_xeg32_right_carriage_joint"]
         self.shoulder = chain.joint_origin(1)
         self.world_T_base = np.eye(4)
@@ -135,8 +136,14 @@ class DualArmTeleop(Node):
         super().__init__("quest_dual_arm_teleop")
         self.args = args
         self.arms = {s: Arm(s, chain, args) for s in args.arms}
-        self.real = args.backend == "real"
-        if self.real:
+        self.real = args.backend != "isaac"
+        self.ethernet = None
+        if args.backend == "real":
+            self.ethernet = EthernetArms(load_endpoints(args.config, args.left_ip, args.right_ip), args.arms,
+                                         dry_run=args.dry_run, state_timeout=args.state_timeout,
+                                         command_timeout=args.command_timeout, max_joint_vel=args.max_joint_vel,
+                                         max_track_error=np.deg2rad(args.max_track_err_deg), rate=args.rate)
+        elif self.real:
             self.traj_pub = self.create_publisher(JointTrajectory, args.real_cmd_topic, 10)
             self.create_subscription(JointState, args.real_state_topic, self._on_real_js, qos_profile_sensor_data)
         else:
@@ -178,8 +185,33 @@ class DualArmTeleop(Node):
         end = time.perf_counter() + seconds
         while time.perf_counter() < end:
             rclpy.spin_once(self, timeout_sec=0.002)
+            self.update_ethernet()
+
+    def update_ethernet(self):
+        if self.ethernet:
+            if self.ethernet.fault:
+                raise RobotError(self.ethernet.fault)
+            for side, link in self.ethernet.arms.items():
+                if link.fault:
+                    raise RobotError(f"{side}: {link.fault}")
+                q, stamp = link.joints()
+                self.arms[side].q_meas, self.arms[side].t_meas = np.array(q), stamp
+                self.all_q[side] = np.array(q)
+
+    def destroy_node(self):
+        if self.ethernet:
+            self.ethernet.close()
+        return super().destroy_node()
 
     def wait_ready(self):
+        if self.ethernet:
+            self.ethernet.connect()
+            self.update_ethernet()
+            for side, link in self.ethernet.arms.items():
+                self.get_logger().info(f"real arm connected [{side}] {link.host}:{link.cri_port}, "
+                                       f"joints [deg] {np.round(np.rad2deg(link.status.joints), 2).tolist()}; "
+                                       f"ERROR={link.status.error}, KINSTATE={link.status.kinstate}")
+            return
         what = (f"{self.args.real_state_topic} from the real arm (ROS_DOMAIN_ID={os.environ.get('ROS_DOMAIN_ID', '0')}; "
                 "is the robot driver running?)" if self.real else
                 "/dual_arm/isaac_joint_states (is run_dual_arm_sim.sh running?)")
@@ -195,6 +227,8 @@ class DualArmTeleop(Node):
                                           "They will fight the teleop if they send commands - stop them first.")
 
     def send(self, cmds: dict, grips: dict | None = None):
+        if self.ethernet:
+            return self.ethernet.send(cmds)
         if self.real:
             return self.send_real(cmds)
         names, positions = [], []
@@ -248,10 +282,14 @@ class DualArmTeleop(Node):
             self.spin_for(1.0 / rate)
 
 
-def main():
+def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--backend", choices=["isaac", "real"], default="isaac",
-                   help="isaac = the simulated dual-arm rig; real = ONE real igus ReBeL (exactly one --arms side)")
+    p.add_argument("--backend", choices=["isaac", "real", "real-ros"], default="isaac",
+                   help="real = dual-arm Ethernet; real-ros = legacy single-arm ROS topics")
+    p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Ethernet endpoints JSON")
+    p.add_argument("--left-ip", help="override left Ethernet IP")
+    p.add_argument("--right-ip", help="override right Ethernet IP")
+    p.add_argument("--command-timeout", type=float, default=0.25, help="Ethernet command watchdog [s]")
     p.add_argument("--real-state-topic", default="/joint_states", help="real arm: joint states (joint1..6)")
     p.add_argument("--real-cmd-topic", default="/rebel_arm_trajectory_controller/joint_trajectory",
                    help="real arm: joint_trajectory_controller command topic")
@@ -261,9 +299,13 @@ def main():
                    help="real arm: let go (stop sending) if no joint state arrived for this long [s]")
     p.add_argument("--max-track-err-deg", type=float, default=15.0,
                    help="real arm: let go if any joint lags its command by more than this [deg]")
-    p.add_argument("--dry-run", action="store_true", help="real arm: run everything but publish no commands")
+    p.add_argument("--dry-run", action="store_true", help="real: observe + Quest IK, no configuration or motion")
     p.add_argument("--real-home", action="store_true",
                    help="real arm: first move slowly (8.6 deg/s) to the teleop start pose HOME_DEG; off = start where it is")
+    p.add_argument("--park-deg", type=float, nargs=6, default=[0.0] * 6, metavar="J",
+                   help="Ethernet: joint pose [deg] every arm returns to before the program exits (default all 0)")
+    p.add_argument("--park-vel-deg", type=float, default=10.0, help="Ethernet: speed of that return [deg/s]")
+    p.add_argument("--no-park", action="store_true", help="Ethernet: do not return to --park-deg on exit")
     p.add_argument("--arms", nargs="+", choices=SIDES, default=list(SIDES), help="which rig arms to drive")
     p.add_argument("--swap-hands", action="store_true", help="left controller drives the right arm and vice versa")
     p.add_argument("--yaw-deg", type=float, default=0.0,
@@ -300,31 +342,84 @@ def main():
     p.add_argument("--gripper-closed", type=float, default=-0.0116631, help="carriage pos at trigger 1 [m]")
     p.add_argument("--no-home", action="store_true")
     p.add_argument("--quiet", action="store_true", help="no per-0.5 s axis-check log while engaged")
-    args, ros_args = p.parse_known_args()
-    for k, v in (REAL_DEFAULTS if args.backend == "real" else SIM_DEFAULTS).items():
+    args, ros_args = p.parse_known_args(argv)
+    for k, v in (REAL_DEFAULTS if args.backend != "isaac" else SIM_DEFAULTS).items():
         if getattr(args, k) is None:
             setattr(args, k, v)
-    if args.backend == "real":
-        if len(args.arms) != 1:
-            p.error("--backend real drives exactly one arm: pass --arms left or --arms right")
+    if len(set(args.arms)) != len(args.arms):
+        p.error("--arms must not contain duplicates")
+    for key in ("rate", "state_timeout", "command_timeout", "max_joint_vel", "max_lin_vel", "max_rot_vel",
+                "max_track_err_deg", "max_lead_deg", "max_lead_m", "max_reach", "scale", "min_arm_dist", "park_vel_deg"):
+        if not np.isfinite(getattr(args, key)) or getattr(args, key) <= 0:
+            p.error(f"--{key.replace('_', '-')} must be finite and positive")
+    if args.backend != "isaac":
+        if args.backend == "real-ros" and len(args.arms) != 1:
+            p.error("--backend real-ros requires --arms left or --arms right")
+        if args.backend == "real" and args.real_home:
+            p.error("Ethernet starts at the measured pose; prepare a bent pose with the robot's own controls")
+        if args.backend == "real" and (args.rate < 10 or args.command_timeout < 2 / args.rate
+                                       or args.command_timeout > .5):
+            p.error("Ethernet requires rate >= 10 and 2/rate <= command-timeout <= 0.5 s")
         args.no_home = not args.real_home  # the real arm moves on its own only when asked to
+    return args, ros_args
 
+
+def main():
+    args, ros_args = parse_args()
     rclpy.init(args=ros_args)
     tcp = tuple(args.tcp) if args.tcp else TCP_PRESETS[args.tcp_preset]
     chain = SerialChain(make_urdf(), "base_link", "link6", ARM_JOINTS, tcp_xyz=tcp)
     node = DualArmTeleop(args, chain)
     log = node.get_logger()
     log.info(f"control point ({'custom' if args.tcp else args.tcp_preset}) in link6 = {np.round(tcp, 4).tolist()} m")
-    if args.backend == "real":
-        log.warning(f"REAL ARM ({args.arms[0]}){' DRY RUN - no commands are sent' if args.dry_run else ''}: "
+    if node.real:
+        log.warning(f"REAL ARMS ({', '.join(args.arms)}){' DRY RUN - observation only' if args.dry_run else ''}: "
                     f"joint {np.rad2deg(args.max_joint_vel):.0f} deg/s, TCP {args.max_lin_vel} m/s, "
                     f"{args.max_rot_vel:.0f} deg/s. Keep the e-stop in reach.")
+    # Startup failures must also release every TCP socket and any configured position source.
+    try:
+        run_session(node, chain, args)
+    finally:
+        node.destroy_node()
+        rclpy.try_shutdown()
+
+
+def park_on_exit(node, args, log):
+    """Before a clean exit, bring the real arms slowly back to --park-deg (default: all joints 0).
+    Skipped on a dry run, with --no-park, or after a fault (stale feedback, e-stop, lost link): the arms
+    then stay where they stopped. A second Ctrl+C / Stop all during the return stops the arms at once."""
+    if node.ethernet is None or args.dry_run or args.no_park:
+        return
+    if node.ethernet.fault or node.ethernet._closed.is_set():
+        log.error(f"[park] not returning to {args.park_deg} deg: {node.ethernet.fault or 'link already closed'}")
+        return
+    signal.signal(signal.SIGINT, signal.default_int_handler)  # rclpy's handler would swallow a second Ctrl+C
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+
+    def guard(cmd):
+        if len(cmd) == 2 and args.min_arm_dist > 0:
+            a, b = (node.arms[s].points_world(np.array(cmd[s])) for s in SIDES)
+            d = np.min(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2))
+            if d < args.min_arm_dist:
+                return f"arms {d * 100:.1f} cm apart - finish the return by hand"
+        return None
+    try:
+        node.ethernet.park(np.deg2rad(args.park_deg), np.deg2rad(args.park_vel_deg),
+                           log=lambda m: log.warning(m), guard=guard)
+    except KeyboardInterrupt:
+        log.error("[park] interrupted - arms stopped where they are")
+    except RobotError as exc:
+        log.error(f"[park] failed, arms stopped: {exc}")
+
+
+def run_session(node, chain, args):
+    log = node.get_logger()
     node.wait_ready()
     if not args.no_home:
-        if args.backend == "real" and args.dry_run:
+        if node.real and args.dry_run:
             log.info("dry run: skipping the move to the start pose")
         else:
-            node.go_home(vel=0.15 if args.backend == "real" else 0.4)
+            node.go_home(vel=0.15 if node.real else 0.4)
     node.spin_for(0.2)
     for arm in node.arms.values():
         arm.q_cmd = arm.q_meas.copy()
@@ -332,14 +427,17 @@ def main():
     hand_of = {s: ({"left": "right", "right": "left"}[s] if args.swap_hands else s) for s in node.arms}
     xr = QuestController(sorted(set(hand_of.values())), HERE / "cloudxr_quest3.env")
     log.info("CloudXR up. Quest Browser -> https://nvidia.github.io/IsaacTeleop/client/v1.3.131/ , "
-             "Server IP = this PC, Connect. Per hand: hold SQUEEZE to move that arm, TRIGGER = its gripper.")
+             "Server IP = this PC, Connect. Per hand: hold SQUEEZE to move that arm. "
+             + ("Real grippers are not controlled." if node.real else "TRIGGER = its gripper."))
 
     r_base_op = Rotation.from_euler("z", args.yaw_deg, degrees=True)
     right_base = r_base_op.apply([0.0, -1.0, 0.0])  # operator 'right' in the arm base frame
     log.info(f"rotation frame: {args.rot_frame}" + (
         f" (controller twist axis {np.round(args.ctrl_twist_axis, 2).tolist()} -> tool Z)" if args.rot_frame == "tool" else ""))
     dt = 1.0 / args.rate
-    max_dq = args.max_joint_vel * dt
+    # Ethernet: stay 10 % under the transport's per-tick limit, so encoder noise between the engage snapshot and
+    # the first streamed target can never trip it (that check would stop both arms).
+    max_dq = args.max_joint_vel * dt * (0.9 if node.ethernet else 1.0)
     both = len(node.arms) == 2
     last_buttons = {}
     try:
@@ -347,6 +445,7 @@ def main():
             t0 = time.perf_counter()
             rclpy.spin_once(node, timeout_sec=0.0)
             readings = xr.read_all()
+            node.update_ethernet()
             cand, grips = {}, {}
             for side, arm in node.arms.items():
                 tracked, pos, quat, squeeze, trigger = readings[hand_of[side]]
@@ -355,11 +454,15 @@ def main():
                     arm.tracked = tracked
                 if not tracked:
                     arm.engaged = False
+                    if node.real:
+                        arm.need_regrip = True
                     continue
-                if node.real and arm.engaged:
+                if node.real:
                     age = time.monotonic() - arm.t_meas
-                    lag = np.rad2deg(np.max(np.abs(arm.q_cmd - arm.q_meas)))
+                    lag = np.rad2deg(np.max(np.abs(arm.q_cmd - arm.q_meas))) if arm.engaged else 0.0
                     if age > args.state_timeout or lag > args.max_track_err_deg:
+                        if node.ethernet and not args.dry_run:
+                            raise RobotError(f"{side}: stale feedback or joint following error; stopping both arms")
                         arm.engaged = False
                         arm.need_regrip = True
                         log.warning(f"[{side}] let go: " + (f"no joint state for {age:.2f} s (network?)" if age > args.state_timeout
@@ -453,16 +556,27 @@ def main():
                     a = node.arms["left"].points_world(qs["left"])
                     b = node.arms["right"].points_world(qs["right"])
                     return np.min(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2))
-                now = {s: node.arms[s].q_cmd for s in SIDES}
+                now = {s: (node.arms[s].q_meas if node.ethernet else node.arms[s].q_cmd) for s in SIDES}
                 nxt = {s: cand.get(s, now[s]) for s in SIDES}
                 d_now, d_next = min_dist(now), min_dist(nxt)
                 if d_next < args.min_arm_dist and d_next < d_now:
                     log.warning(f"arms {d_next * 100:.1f} cm apart - holding both (move them apart)",
                              throttle_duration_sec=1.0)
                     cand = {}
+                    if node.ethernet:
+                        for arm in node.arms.values():
+                            arm.engaged, arm.need_regrip = False, True
 
             for side, q in cand.items():
                 node.arms[side].q_cmd = q
+            if node.ethernet:
+                # Preparation / release ACKs can take a tick; do not let stale controller input
+                # start a new stream after a blocked control iteration.
+                if time.perf_counter() - t0 > args.command_timeout:
+                    node.ethernet.send({})
+                    for arm in node.arms.values():
+                        arm.engaged, arm.need_regrip = False, True
+                    continue
             node.send(cand, grips)
             node.publish_action()
             # episode events: A/X = start/save (toggle), B/Y = discard; rising edges, either hand
@@ -503,10 +617,16 @@ def main():
             time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
     except KeyboardInterrupt:
         pass
+    except BaseException:
+        if node.ethernet:
+            node.ethernet.close()  # a fault: stop at once, no return to the park pose
+        raise
     finally:
+        # Return to the park pose on a clean exit, then stop physical streams before the slow CloudXR shutdown.
+        park_on_exit(node, args, log)
+        if node.ethernet:
+            node.ethernet.close()
         xr.close()
-        node.destroy_node()
-        rclpy.try_shutdown()
 
 
 if __name__ == "__main__":

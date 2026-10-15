@@ -151,7 +151,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--name", required=True, help="dataset folder name under --root")
     p.add_argument("--task", required=True, help="language instruction stored with every frame")
-    p.add_argument("--root", default=os.environ.get("ROBOT_REMOTE_DATASETS", "~/datasets"))
+    p.add_argument("--root", default=os.environ.get("ROBOT_REMOTE_DATASETS", str(Path(__file__).resolve().parents[1] / "datasets")))
     p.add_argument("--repo-id", default=None, help="default: local/<name>")
     p.add_argument("--fps", type=int, default=30)
     p.add_argument("--width", type=int, default=640)

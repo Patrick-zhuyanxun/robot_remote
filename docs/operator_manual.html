@@ -212,7 +212,7 @@ details.qa div { padding: 0 14px 12px; }
     <div class="board">
       <button class="tile r" type="button" data-go="flow"><span class="ico">⇄</span><span><b>Data flow</b><span>Which program sends what to whom. Click a box for details; topics and dataset format.</span></span></button>
       <button class="tile r" type="button" data-go="tools"><span class="ico">≡</span><span><b>Scripts &amp; limits</b><span>Every launcher script, its options, and known limitations.</span></span></button>
-      <button class="tile r" type="button" data-go="real"><span class="ico">⚙</span><span><b>Real robot</b><span>Drive one real ReBeL arm with the Quest (teleop only), and what is still missing.</span></span></button>
+      <button class="tile r" type="button" data-go="real"><span class="ico">⚙</span><span><b>Real robot</b><span>Connect both physical ReBeL arms over wired Ethernet with Quest teleop.</span></span></button>
     </div>
   </div>
 </section>
@@ -314,7 +314,7 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
         <p><strong>Firewall.</strong> If <code>ufw</code> is enabled, open the CloudXR ports for the Quest:</p>
         <div class="copyrow"><pre><code id="c-ufw">sudo ufw allow 47998/udp && sudo ufw allow 48322/tcp && sudo ufw allow 49100/tcp</code></pre><button type="button" data-copy="c-ufw">Copy</button></div>
         <p><strong>Private ROS graph.</strong> Every launcher sources <code>ros_env.sh</code>, which sets <code>ROS_DOMAIN_ID=42</code> and <code>ROS_LOCALHOST_ONLY=1</code>. Another machine on the lab network runs the same rig on domain 0; without this, commands from one PC move the other PC's arms. Use another domain with <code>export ROBOT_REMOTE_DOMAIN_ID=43</code> if two people use this setup on one network.</p>
-        <p><strong>Datasets</strong> go to <code>~/datasets</code> unless you choose another folder in the launcher or set <code>ROBOT_REMOTE_DATASETS</code>.</p>
+        <p><strong>Datasets</strong> go to <code>robot_remote/datasets/</code> unless you choose another folder in the launcher or set <code>ROBOT_REMOTE_DATASETS</code>.</p>
         <p class="check">Pass: <code>sudo ufw status</code> says inactive, or lists the three ports.</p>
       </div>
 
@@ -386,7 +386,7 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
         <h2>Fill in the settings</h2>
         <table>
           <tbody>
-            <tr><th>Target</th><td>Isaac Sim, or one real ReBeL arm (see <a href="#real" data-go="real">Real robot</a>; teleop only).</td></tr>
+            <tr><th>Target</th><td>Isaac Sim, or two real ReBeL arms over Ethernet (see <a href="#real" data-go="real">Real robot</a>; teleop only).</td></tr>
             <tr><th>Arms</th><td>Left, right or both.</td></tr>
             <tr><th>Cameras</th><td>Head, left wrist, right wrist. Fewer cameras make the simulation run faster.</td></tr>
             <tr><th>Resolution / FPS</th><td>Default 640×480 at 30 fps.</td></tr>
@@ -488,7 +488,7 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
     <p>Without the window: <code>./recording/run_replay.sh --path &lt;dataset folder&gt; --episode 0</code>. In Python:</p>
     <div class="copyrow"><pre><code id="c-load">from pathlib import Path
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-root = Path("~/datasets/dual_rebel_task").expanduser()
+root = Path("datasets/dual_rebel_task").resolve()
 ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="button" data-copy="c-load">Copy</button></div>
   </div>
 </section>
@@ -540,7 +540,7 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
 
     <rect class="d-box" data-n="dataset" x="700" y="430" width="270" height="98" rx="8"/>
     <text class="d-t" x="835" y="458" text-anchor="middle">LeRobotDataset v3.0</text>
-    <text class="d-s" x="835" y="478" text-anchor="middle">~/datasets/&lt;name&gt;/</text>
+    <text class="d-s" x="835" y="478" text-anchor="middle">robot_remote/datasets/&lt;name&gt;/</text>
     <text class="d-s" x="835" y="494" text-anchor="middle">parquet (state, action)</text>
     <text class="d-s" x="835" y="510" text-anchor="middle">AV1 mp4 (cameras)</text>
 
@@ -657,7 +657,7 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
   <div id="qas">
     <details class="qa"><summary><code>No such file or directory</code> when running a script</summary><div>The commands in this manual start with <code>./</code> and run from the robot_remote folder. <code>cd</code> into your clone first (for example <code>cd ~/robot_remote</code>), or put the full path in front.</div></details>
     <details class="qa"><summary>Playback window: "cannot read the dataset" / missing meta/episodes</summary><div>The folder was moved or renamed while the recorder was still finalizing. Look for a leftover <code>&lt;name&gt;/meta/episodes/</code> folder at the old Save location and move it into the dataset's <code>meta/</code>.</div></details>
-    <details class="qa"><summary>Real arm: "no /joint_states from the robot"</summary><div>Is the driver running on the robot PC? Same ROS_DOMAIN_ID (11)? Both PCs on the same network? Check by hand: <code>ROBOT_REMOTE_TARGET=real source ./ros_env.sh &amp;&amp; ros2 topic echo /joint_states --once --no-daemon</code>.</div></details>
+    <details class="qa"><summary>Ethernet arms: connection or motor-state failure</summary><div>Run <code>./quest_teleop/run_quest_real_arm.sh --check-only</code>. Check left 192.168.3.11 and right 192.168.3.12, TCP 3920, and the PC subnet. <code>_MNE</code> / <code>KINSTATE 99</code> means motors are disabled; prepare them with the robot controls. Close other control clients before live teleop. The report is saved in <code>logs/real_connection_check.json</code>.</div></details>
     <details class="qa"><summary>Real arm: "let go" warnings</summary><div>Joint states stopped for over 0.5 s (Wi-Fi) or the arm lagged its command by over 15°. Release grip and grip again. A wired connection helps.</div></details>
     <details class="qa"><summary>The Quest page cannot connect</summary><div>Same Wi-Fi as the workstation? Server IP current (the launcher shows it)? Certificate accepted again after an IP change? Firewall ports open (Install → Network)?</div></details>
     <details class="qa"><summary>Teleop dot stays amber after Connect</summary><div>Enter the immersive session, switch both controllers on and hold them in front of the headset.</div></details>
@@ -676,53 +676,51 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
 
 <!-- ======================= REAL ======================= -->
 <section class="page" data-page="real" data-title="Real robot" hidden>
-  <p class="eyebrow">How it works</p>
+  <p class="eyebrow">Wired Ethernet · both physical arms</p>
   <h1>Real robot</h1>
   <div class="tabs" role="tablist">
-    <button type="button" role="tab" data-tab="x-run" aria-selected="true">Drive the real arm</button>
+    <button type="button" role="tab" data-tab="x-run" aria-selected="true">Connect both arms</button>
     <button type="button" role="tab" data-tab="x-how" aria-selected="false">How it connects</button>
-    <button type="button" role="tab" data-tab="x-todo" aria-selected="false">Not done yet</button>
+    <button type="button" role="tab" data-tab="x-todo" aria-selected="false">Validation &amp; limits</button>
   </div>
   <div data-panel="x-run">
-    <p class="note danger"><strong>One person stands at the e-stop</strong> the whole time. The workspace is clear. MoveIt / Servo on the robot PC send no commands.</p>
+    <p class="note danger">Keep an operator at the hardware e-stop during physical teleop. Clear the workspace and close other robot drivers / control clients. The software never enables motors, resets errors or homes the arms at start.</p>
+    <p class="note"><strong>Return to 0° on exit.</strong> On <strong>Stop all</strong> (or Ctrl+C) the selected arms move <em>on their own</em> back to all joints 0° at 10°/s, all arms arriving together, then the program closes. Press Stop all / Ctrl+C <strong>again</strong> to stop them where they are. Skipped on a dry run, after a fault (lost link, stale feedback, e-stop), or with the launcher checkbox off (<code>--no-park</code>). It stops early if the two arms come within 12 cm. Other pose: <code>--park-deg J1 … J6</code>.</p>
     <ol>
-      <li>On the robot PC, the igus ReBeL driver is running (<code>/igus_rebel</code>, <code>rebel_arm_trajectory_controller</code>).</li>
-      <li>In the launcher choose <strong>Target → Real igus ReBeL arm</strong>, the arm (<em>left</em> or <em>right</em>) and <code>ROS_DOMAIN_ID</code> (11).</li>
-      <li>First time: tick <strong>Dry run</strong> and press Start. The status shows <em>robot connected</em> and the current joint angles; nothing is sent. Stop all.</li>
-      <li>If the arm is straight up (all joints 0°, a singular pose), tick <strong>First move slowly to the start pose</strong> (0, 0, 100, 0, 50, 0)°, or move it to a bent pose with the robot's own tools.</li>
-      <li>Untick Dry run, press Start, confirm the safety dialog, connect the Quest. The arm moves <strong>only while you hold GRIP</strong> on that arm's controller.</li>
+      <li>Connect this PC and the controllers to the wired 192.168.3.x subnet. Left arm: <code>192.168.3.11</code>; right arm: <code>192.168.3.12</code>. This PC was observed at <code>192.168.3.54</code>.</li>
+      <li>Run the read-only check below. It needs system Python only and saves <code>logs/real_connection_check.json</code>.</li>
+      <li>Launcher → <strong>Real igus ReBeL dual arms — wired Ethernet</strong>. Select both arms in “Arms to control” and verify the IPs. Begin with <strong>Dry run</strong>.</li>
+      <li>Connect the Quest as usual. Dry run reads robot state and computes IK without configuring the controllers or sending target positions.</li>
+      <li>Using robot controls, enable motors and prepare bent working poses. Close other control clients. Untick Dry run and Start. Each arm starts at its measured pose and moves while its controller’s <strong>GRIP</strong> is held.</li>
     </ol>
-    <p>Limits on the real arm: 20°/s per joint, 0.15 m/s, 30°/s. The teleop lets go (stops sending) when the joint states stop arriving for 0.5 s or a joint lags its command by more than 15°; release and grip again to continue. No gripper, no recording yet.</p>
-    <p>Without the launcher, from the robot_remote folder:</p>
-    <div class="copyrow"><pre><code id="c-real">./quest_teleop/run_quest_real_arm.sh --arms left --dry-run
-./quest_teleop/run_quest_real_arm.sh --arms left --real-home</code></pre><button type="button" data-copy="c-real">Copy</button></div>
+    <div class="copyrow"><pre><code id="c-real">./quest_teleop/run_quest_real_arm.sh --check-only
+./quest_teleop/run_quest_real_arm.sh --arms left right --dry-run
+# With an operator at the e-stop and both arms prepared:
+./quest_teleop/run_quest_real_arm.sh --arms left right</code></pre><button type="button" data-copy="c-real">Copy</button></div>
+    <p>Choose <code>--arms left</code> or <code>--arms right</code> to connect one arm. The Ethernet path starts at the measured pose and rejects <code>--real-home</code>. No physical gripper control or real-episode recording yet.</p>
   </div>
   <div data-panel="x-how" hidden>
-    <div class="tbl"><table>
-      <tbody>
-        <tr><th>Network</th><td>LAN, <code>ROS_DOMAIN_ID=11</code>, Fast DDS (<code>rmw_fastrtps_cpp</code>; Cyclone DDS does not see the robot). <code>ROBOT_REMOTE_TARGET=real</code> makes <code>ros_env.sh</code> set this.</td></tr>
-        <tr><th>State in</th><td><code>/joint_states</code>, <code>joint1..6</code>, about 75 Hz</td></tr>
-        <tr><th>Command out</th><td><code>/rebel_arm_trajectory_controller/joint_trajectory</code>: one point per tick (30 Hz), reached 0.15 s after it is sent. When messages stop, the controller finishes the last short segment and holds.</td></tr>
-        <tr><th>Mapping</th><td>Same as the sim: flange control point, translation in the arm-base axes, rotation in the tool frame. One Quest controller drives the one real arm.</td></tr>
-      </tbody>
-    </table></div>
-    <p class="note">Over Wi-Fi the joint states arrive with gaps of up to 0.7 s, so the teleop may let go now and then. Use a wired connection for smoother control. For manual <code>ros2</code> commands: <code>ROBOT_REMOTE_TARGET=real source ./ros_env.sh</code>.</p>
+    <div class="tbl"><table><tbody>
+      <tr><th>Control / state</th><td>One CRI TCP 3920 connection per arm. Queries state, active-client ownership, program state and Position Interface port. Zero-jog heartbeats keep it connected.</td></tr>
+      <tr><th>Continuous targets</th><td>Separate Position Interface TCP per arm (queried from CRI; both currently report 3940). Six joint angles in degrees; no external axes or tool outputs are sent. Selected only while GRIP is held.</td></tr>
+      <tr><th>ROS</th><td>Local ROS supplies the existing robot description / IK and visualization. No ROS topics carry physical arm commands and no remote ROS driver is required. Quest still uses Wi-Fi / CloudXR.</td></tr>
+      <tr><th>Limits</th><td>30 Hz; 0.35 rad/s per joint, 0.15 m/s TCP translation, 30°/s TCP rotation. Per-tick joint limits reject jumps. Starts at the physical measured pose.</td></tr>
+      <tr><th>Stop handling</th><td>Release deselects that arm’s position source. Tracking loss requires release and re-grip. Network faults, stale feedback (0.5 s), following error (15°), invalid targets or command gaps (0.25 s) close both selected transports. No automatic restart.</td></tr>
+      <tr><th>Project files</th><td>Endpoints: <code>config/real_arms.json</code>. GUI settings: <code>config/launcher.json</code>. Logs: <code>logs/</code>. Shared Codex / Claude status: <code>AGENTS.md</code> (<code>CLAUDE.md</code> points to it).</td></tr>
+    </tbody></table></div>
+    <p class="note">Live startup temporarily enables a disabled Position Interface (a persistent controller setting). Cleanup requests restoration. A hard kill or network loss can prevent restoration; check controller configuration afterward.</p>
+    <p>Protocol: <a href="https://wiki.cpr-robots.com/images/8/81/CPR_RobotInterfaceCRI_V17.pdf">manufacturer CRI V17</a> and <a href="https://wiki.cpr-robots.com/images/7/70/CPR_PositionInterface_V1.pdf">Position Interface V1</a>.</p>
   </div>
   <div data-panel="x-todo" hidden>
-    <div class="reserved">
-      <p><span class="tag">Reserved · not implemented</span></p>
-      <div class="tbl"><table>
-        <thead><tr><th>Item</th><th>Status</th></tr></thead>
-        <tbody>
-          <tr><td>Both real arms at once</td><td>to be defined</td></tr>
-          <tr><td>Recording real episodes (same 14-D state/action, real cameras)</td><td>to be defined</td></tr>
-          <tr><td>Gripper driver and the 0–1 closedness mapping</td><td>to be defined</td></tr>
-          <tr><td>Workspace limits / collision check against the stand and table</td><td>to be defined</td></tr>
-          <tr><td>Calibration: arm base poses on the stand, TCP of the real gripper</td><td>to be defined</td></tr>
-          <tr><td>Wired network and latency budget</td><td>to be defined</td></tr>
-        </tbody>
-      </table></div>
-    </div>
+    <p><strong>2026-10-15 read-only observation:</strong> both controllers responded with V980-15-000-2, physical REBEL-6DOF-03, and port 3940. Left had no joint errors; right reported <code>_MNE</code> / <code>KINSTATE 99</code> (motors disabled). No movement, motor enable or Position Interface configuration was performed. Rerun the check for current state.</p>
+    <div class="tbl"><table><thead><tr><th>Item</th><th>Status</th></tr></thead><tbody>
+      <tr><td>Dual independent Ethernet transport and fault handling</td><td>Implemented; tested against local fake controllers</td></tr>
+      <tr><td>Quest → physical movement</td><td>On-site validation still required</td></tr>
+      <tr><td>Joint zero conventions / directions, base poses and physical TCPs</td><td>On-site validation / calibration still required</td></tr>
+      <tr><td>Stand, table and full-link collision checking</td><td>Not implemented; the existing point guard uses simulated geometry</td></tr>
+      <tr><td>Physical grippers, cameras and real recording</td><td>Not implemented</td></tr>
+    </tbody></table></div>
+    <p class="note danger">Software speed limits and the point-distance guard are not personnel safety protection. Keep the hardware e-stop under an operator’s control.</p>
   </div>
 </section>
 

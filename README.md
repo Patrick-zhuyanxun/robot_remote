@@ -1,11 +1,14 @@
 # robot_remote — Quest teleop & data recording for the igus ReBeL dual arm
 
 Teleoperate the dual-arm igus ReBeL rig in **Isaac Sim 6.1** with a **Meta Quest 3/3S** and record
-**LeRobot v3.0** datasets for VLA training. A real-robot backend is reserved but not implemented yet.
+**LeRobot v3.0** datasets for VLA training. Two physical ReBeL arms can also be connected directly
+over wired Ethernet (CRI + Position Interface); physical grippers and real-episode recording are not implemented.
+
+**Codex / Claude shared context:** read [`AGENTS.md`](AGENTS.md) first (`CLAUDE.md` links to the same file).
 
 **Manual:** open [`docs/operator_manual.html`](docs/operator_manual.html) in a browser (or press **? Manual** in the launcher).
 It has one short page per task: Install, Set up the Quest, Run a session, Controls, Record & check, Data flow,
-Troubleshooting, Real robot (reserved).
+Troubleshooting, Real robot.
 
 ## Install (new machine)
 
@@ -48,8 +51,10 @@ mkdir -p ~/isaac-sim-6.1 && unzip -q ~/Downloads/isaac-sim-6.1.0.zip -d ~/isaac-
 3. Hold **Grip** to move an arm, **Trigger** closes its gripper, **A/X** starts / saves an episode,
    **B/Y** discards it. **Stop all** in the GUI saves any open episode and shuts everything down.
 
-Datasets go to `~/datasets` by default (choose another folder in the GUI or set `ROBOT_REMOTE_DATASETS`).
-Settings are remembered in `~/.config/robot_remote_launcher.json`; process logs go to `robot_remote/logs/`.
+New datasets go to `robot_remote/datasets/` by default (the GUI and `ROBOT_REMOTE_DATASETS` can override this).
+Settings live in `config/launcher.json`, physical endpoints in `config/real_arms.json`, and logs in `logs/`.
+Old launcher settings are copied into the project on first use; the former default `~/datasets` is replaced
+with the project default for future sessions. Existing datasets are left in place; custom dataset paths are preserved.
 
 ## Quest controls
 
@@ -83,7 +88,7 @@ Quest 3/3S ──Wi-Fi/WebRTC──► CloudXR runtime ─┐
                             ▼
               record_dataset.py (.venv_record: lerobot 0.5.1, Isaac's py3.12 rclpy)
                             ▼
-              ~/datasets/<name>/   LeRobotDataset v3.0
+              robot_remote/datasets/<name>/   LeRobotDataset v3.0
 ```
 
 All launchers source `ros_env.sh` (**ROS_DOMAIN_ID=42, ROS_LOCALHOST_ONLY=1**). Another machine on the
@@ -115,13 +120,79 @@ motion even though Isaac runs below real time (≈0.5× with three cameras).
 | `quest_teleop/run_teleop_viz.sh` | RViz view of the teleop frames (arm bases, control point, hand-motion axes). |
 | `dual_arm_sim/start_right_arm_moveit.sh` | MoveIt/RViz planning for the right arm (do not run together with Quest teleop). |
 
-## Real robot (one arm, teleop only)
+## Physical dual arms over Ethernet (teleop only)
 
-Launcher → **Target: Real igus ReBeL arm**, or `./quest_teleop/run_quest_real_arm.sh --arms left [--dry-run] [--real-home]`.
-Connects on ROS_DOMAIN_ID 11 with Fast DDS over the LAN (`ROBOT_REMOTE_TARGET=real` in `ros_env.sh`), reads
-`/joint_states` and streams 30 Hz single-point trajectories to `/rebel_arm_trajectory_controller/joint_trajectory`
-only while GRIP is held. Limits 20°/s per joint, 0.15 m/s, 30°/s; lets go on stale joint states (>0.5 s) or tracking
-error (>15°). Not done yet: both arms, gripper, recording real episodes, workspace limits. Keep someone at the e-stop.
+| Arm | Controller | Address | Communication |
+| --- | --- | --- | --- |
+| Left | Left Quest controller | `192.168.3.11` | CRI TCP 3920 + Position Interface (port queried from CRI) |
+| Right | Right Quest controller | `192.168.3.12` | Independent CRI TCP 3920 + Position Interface |
+
+Connect this PC and both robot controllers to the same wired subnet, using a switch or suitable wired
+interfaces. This PC was observed at `192.168.3.54`; avoid duplicate IPs. Quest still connects to CloudXR over
+Wi-Fi. The physical arm link uses TCP directly; a remote ROS driver, ROS discovery and command topics are
+not needed. Local ROS Humble and the existing `igus_ws` description remain dependencies for IK and visualization.
+
+Run from this project directory:
+
+```bash
+# 1. Read-only check, no ROS / Quest required. Saves logs/real_connection_check.json.
+./quest_teleop/run_quest_real_arm.sh --check-only
+
+# 2. Observe both robots and exercise Quest IK without changing robot configuration or sending targets.
+./quest_teleop/run_quest_real_arm.sh --arms left right --dry-run
+
+# 3. Operator at the e-stop, motors enabled and bent poses prepared using the robot's own controls:
+./quest_teleop/run_quest_real_arm.sh --arms left right
+```
+
+Alternatively launch `./launcher/run_gui.sh`, select **Real igus ReBeL dual arms — wired Ethernet**, select
+both arms, and check the two IP fields. **Dry run** is enabled on a fresh configuration. One arm can be
+selected with `--arms left` or `--arms right`. CLI endpoints come from `config/real_arms.json`; override with
+`--config <file>`, `--left-ip <ip>` or `--right-ip <ip>`. The GUI remembers explicit IP overrides locally.
+
+Both selected robots must have healthy feedback, enabled motors, an active CRI connection and a stopped
+robot program before either Position Interface is configured. The client does not reset errors, enable
+motors, home, reference joints or take control away from another client. Close other control clients after
+preparing the arms. `--real-home` is rejected on Ethernet. Start from the measured physical pose and hold
+each controller's **GRIP** to move its arm; release to deselect that position source. Tracking loss requires
+release and re-grip. Default limits: 0.35 rad/s per joint, 0.15 m/s TCP translation, 30°/s TCP rotation at 30 Hz.
+
+**Return to 0° on exit:** on Stop all / Ctrl+C the selected arms move on their own back to all joints 0° (`--park-deg`)
+at 10°/s (`--park-vel-deg`), arriving together, then the program closes. A second Stop all / Ctrl+C stops them where
+they are. Skipped on a dry run, after a fault, or with `--no-park` (launcher checkbox). Stops early if the arms come
+within `--min-arm-dist`. Keep the path to the vertical pose clear.
+
+The transport sends six joint angles in degrees, converted from the IK's radians. It leaves external axes,
+tool axes and digital outputs alone. Live sessions temporarily enable the Position Interface if needed
+(this controller setting is persistent), connect its queried port, seed the measured pose, and select it
+only on grip. On normal cleanup, the client requests restoration of an interface it enabled. After a hard
+process kill or network loss, check the controller configuration; restoration cannot be guaranteed.
+
+A joint error, stale feedback (0.5 s), following error (15°), command gap (0.25 s), invalid target, rejected
+command or TCP disconnect closes both selected transports. The watchdog runs independently of the Quest
+control loop. Restart after faults; no automatic motion recovery. Socket close stops Position Interface use
+as defined by the [manufacturer's specification](https://wiki.cpr-robots.com/images/7/70/CPR_PositionInterface_V1.pdf).
+These software checks are not a safety controller; keep a person at the hardware e-stop.
+
+The existing point-distance guard uses the simulated rig's base/tool geometry. Physical base poses, TCPs,
+joint zero conventions and controller directions require on-site validation before meaningful motion.
+It is not a full stand/table/self-collision checker. Physical gripper control, cameras and real recordings
+remain unsupported.
+
+**Verified 2026-10-15:** both controllers answered read-only CRI queries, reporting RobotControl
+`V980-15-000-2` and Position Interface port 3940. Left: no joint errors; right: `_MNE` / `KINSTATE 99`
+(motors disabled). No hardware movement, motor enable or Position Interface configuration was performed.
+Socket-level mock tests cover streaming and fault handling; actual Quest-to-hardware motion remains unverified.
+Current evidence and handoff are in `AGENTS.md`; rerun `--check-only` for current robot state.
+
+The older one-arm ROS backend remains available through `ROBOT_REMOTE_TARGET=real` + `ros_env.sh`,
+then `quest_dual_arm_teleop.py --backend real-ros --arms left` in the sourced Quest environment.
+Do not run it alongside Ethernet control of that arm.
+
+```bash
+# Tests use two local fake controllers; they do not contact the real robots.
+python3 -m unittest discover -s tests -v
+```
 
 ## Known limitations
 
