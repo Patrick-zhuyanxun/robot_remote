@@ -91,3 +91,9 @@
 - Ethernet 只選一臂時，另一臂以唯讀 CRI 連線（`watch_arm()`：只讀 STATUS，若成為 active 立即 `SetActive false`，從不設定 Position Interface、不送 Reset/Enable）提供姿態給 guard；其狀態逾時則被驅動的手臂保持不動。`--no-watch-other` 關閉（無兩臂保護）。
 - 驗證：segment 距離函式 300 組隨機暴力比對；新增 3 項整合／單元測試（左臂被假 Quest 推向右臂：有旁觀時停在 4.7 cm、旁觀臂只收到查詢與 SetActive false；不旁觀時越過 5 cm；校正臂距 0.448 m、home 間距 > 0.2 m、J1 −90° 伸展時重疊），共 40 項通過。未在實機驗證。未建模：支架、桌面、相機；膠囊半徑為估計值。
 - 使用者決定（2026-10-16）：只開一臂時，另一臂預設**假設維持全軸 0°**（`--other-arm-deg`，預設全 0），不連線其控制器（因為常常不會兩臂都開）。唯讀旁觀改為選用 `--watch-other`。測試：左臂推向假設直立的右臂時停在 4.9 cm，右臂控制器未收到任何連線；`--watch-other` 時停在 4.7 cm。40 項通過。
+
+## 實機第一次握持即斷線 + 實機 RViz（2026-10-16，Claude）
+
+- 實機錯誤：`right: unexpected Position Interface message: ['OK']`。RobotControl V15 的 Position Interface 對每個目標回 `MSGSTART OK MSGEND`（V1 文件未記載），舊程式視為未知訊息而讓兩臂故障停止，所以一握持就斷線、手臂沒動。修正：`OK` 略過；`ERROR …` 視為拒絕並停止；其他未知訊息忽略但記錄在 `unknown_position_messages`。假控制器現在預設對每個目標回 OK（更貼近實機），新增 2 項測試。
+- 注意：該次使用者同時選了左右兩臂，右臂也被 Reset + Enable（先前右臂由他人使用）。
+- 實機 RViz：teleop 發布 `/quest_teleop/joint_states`（兩臂量測關節；未驅動臂為假設／旁觀姿態）、`/quest_teleop/{side}/hand`（PoseStamped，frame `quest` = 操作者座標系）、`/quest_teleop/state`（JSON 握持狀態）。`teleop_viz.py --source real`：world = 左臂 base_link，右臂底座由手眼校正放置，控制器 TF `{side}/controller`，綠／白／紅球表示握持／放開／追蹤遺失。GUI Real 模式勾選「RViz: live arms + Quest controllers」（預設開）會在手臂連上後開啟，Stop all 時在回位後關閉。以兩台假控制器 + 實際 teleop + 無視窗 viz 驗證資料流（關節、TF、狀態）與 GUI 式關閉；42 項測試通過。未在實機與實際頭盔驗證畫面。

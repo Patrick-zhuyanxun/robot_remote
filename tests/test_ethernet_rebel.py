@@ -38,6 +38,7 @@ class FakeRobot:
         self.reject_use = False
         self.mute_status = False
         self.refuse_enable = False
+        self.ack_targets = True
         self.estop_value = 3
         self.follow = False  # True: the fake arm jumps to every streamed target (ideal tracking)
         self.cri = self.pos = None
@@ -142,6 +143,8 @@ class FakeRobot:
                     return
                 new = frames.feed(data)
                 self.targets.extend(new)
+                if self.ack_targets and new:
+                    self.pos.sendall(b"MSGSTART OK MSGEND\n" * len(new))  # RobotControl V15 acknowledges targets
                 if self.follow and self.in_use and new:
                     self.joints_deg = [float(x) for x in new[-1][2:8]]
         except OSError:
@@ -327,6 +330,23 @@ class DualTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(RobotError, "still not enabled"):
             self.connect(enable_motors=True)
         self.assert_pair_closed()
+
+    def test_position_ok_acknowledgements_do_not_fault(self):
+        self.connect()
+        for k in range(1, 6):
+            self.pair.send({"left": [.001 * k] * 6, "right": [.001 * k] * 6})
+            time.sleep(.03)
+        time.sleep(.2)
+        self.assertIsNone(self.pair.fault)
+        self.assertFalse(self.pair.arms["left"].unknown_position_messages)
+
+    def test_position_error_reply_stops_both(self):
+        self.connect()
+        self.pair.send({"left": [.001] * 6, "right": [.001] * 6})
+        self.left.pos.sendall(b"MSGSTART ERROR FORMAT MSGEND\n")
+        self.assert_pair_closed()
+        eventually(lambda: self.pair.fault is not None)
+        self.assertIn("rejected", self.pair.fault)
 
     def test_existing_position_source_is_not_taken_over(self):
         self.right.enabled = self.right.in_use = True

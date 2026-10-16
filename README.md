@@ -120,6 +120,13 @@ motion even though Isaac runs below real time (≈0.5× with three cameras).
 | `quest_teleop/run_teleop_viz.sh` | RViz view of the teleop frames (arm bases, control point, hand-motion axes). |
 | `dual_arm_sim/start_right_arm_moveit.sh` | MoveIt/RViz planning for the right arm (do not run together with Quest teleop). |
 
+## RViz of the physical arms
+
+`./quest_teleop/run_teleop_viz.sh --source real` (the launcher opens it by default in Real mode): both arms from the
+measured joints the teleop publishes on `/quest_teleop/joint_states` (bases from the hand-eye calibrations, world =
+left base_link), each Quest controller as TF `{side}/controller` under the frame `quest` (green sphere = grip
+driving the arm), and `/quest_teleop/{side}/target`. Read-only.
+
 ## Inter-arm collision guard
 
 Each arm is modelled as capsules along its links and tooling (radius 6 cm links, 4 cm flange/XEG-32/knife). A

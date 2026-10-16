@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# RViz view of the Quest teleop frames for the Isaac dual-arm rig. Read-only: sends no commands,
+# RViz view of the Quest teleop: the Isaac rig, or with --source real the physical arms + Quest controllers.
+# Read-only: sends no commands,
 # so it can run next to run_dual_arm_sim.sh and run_quest_dual_arm.sh.
 #   --yaw-deg N   use the same value you pass to the teleop script (default 0)
 set -eo pipefail

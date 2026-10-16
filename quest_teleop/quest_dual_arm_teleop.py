@@ -20,6 +20,7 @@ Real backends use slower limits, start at the measured pose, and do not command 
 """
 
 import argparse
+import json
 import os
 import signal
 import subprocess
@@ -150,6 +151,11 @@ class DualArmTeleop(Node):
         # for record_dataset.py: full 14-D action every tick + episode events from the controller buttons
         self.action_pub = self.create_publisher(JointState, "/quest_teleop/action", 10)
         self.event_pub = self.create_publisher(String, "/quest_teleop/events", 10)
+        # for teleop_viz.py --source real (RViz of the physical arms): measured joints of both arms (the
+        # undriven one at its assumed / watched pose), each driving controller's pose, and the grip state
+        self.viz_js_pub = self.create_publisher(JointState, "/quest_teleop/joint_states", 10)
+        self.hand_pub = {s: self.create_publisher(PoseStamped, f"/quest_teleop/{s}/hand", 10) for s in args.arms}
+        self.state_pub = self.create_publisher(String, "/quest_teleop/state", 10)
         self.all_q = {s: None for s in SIDES}       # measured arm joints of BOTH arms (driven or not)
         self.all_grip = {s: 0.0 for s in SIDES}     # measured gripper closedness [0, 1]
         if not self.real:
@@ -194,6 +200,35 @@ class DualArmTeleop(Node):
                 q, stamp = link.joints()
                 self.arms[side].q_meas, self.arms[side].t_meas = np.array(q), stamp
                 self.all_q[side] = np.array(q)
+
+    def publish_viz(self, readings, hand_of):
+        stamp = self.get_clock().now().to_msg()
+        names, pos = [], []
+        for s in SIDES:
+            q = self.arms[s].q_meas if s in self.arms else None
+            if q is None and s == self.watch_side:
+                q = np.deg2rad(self.args.other_arm_deg)
+                if self.watch is not None and self.watch.status is not None:
+                    q = np.array(self.watch.status.joints)
+            if q is not None:
+                names += [f"arm_{s}_{j}" for j in ARM_JOINTS]
+                pos += [float(v) for v in q]
+        if names:
+            msg = JointState(name=names, position=pos)
+            msg.header.stamp = stamp
+            self.viz_js_pub.publish(msg)
+        state = {}
+        for s, arm in self.arms.items():
+            tracked, p, quat, squeeze, _ = readings[hand_of[s]]
+            state[s] = "engaged" if arm.engaged else ("tracked" if tracked else "lost")
+            if tracked:
+                ps = PoseStamped()
+                ps.header.frame_id, ps.header.stamp = "quest", stamp  # operator frame: x fwd, y left, z up
+                ps.pose.position.x, ps.pose.position.y, ps.pose.position.z = map(float, p)
+                (ps.pose.orientation.x, ps.pose.orientation.y, ps.pose.orientation.z,
+                 ps.pose.orientation.w) = map(float, quat)
+                self.hand_pub[s].publish(ps)
+        self.state_pub.publish(String(data=json.dumps(state)))
 
     def other_arm(self):
         """(side, capsules) of the watched arm from its latest STATUS, or (side, None) if that is stale."""
@@ -662,6 +697,7 @@ def run_session(node, chain, args):
                     continue
             node.send(cand, grips)
             node.publish_action()
+            node.publish_viz(readings, hand_of)
             # episode events: A/X = start/save (toggle), B/Y = discard; rising edges, either hand
             for h, (prim, sec) in xr.buttons.items():
                 was_p, was_s = last_buttons.get(h, (False, False))

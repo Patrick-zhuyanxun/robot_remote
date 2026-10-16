@@ -34,7 +34,7 @@ DEFAULTS = {
     "record": True, "name": "dual_rebel_task", "task": "pick up the box",
     "root": os.environ.get("ROBOT_REMOTE_DATASETS", str(ROOT / "datasets")), "resolution": "640x480", "fps": 30, "yaw_deg": 0,
     "left_ip": ENDPOINTS["left"]["host"], "right_ip": ENDPOINTS["right"]["host"], "real_dry_run": True,
-    "real_park": True, "real_enable": True,
+    "real_park": True, "real_enable": True, "real_rviz": True,
 }
 C = {"bg": "#1f2329", "panel": "#2a2f37", "fg": "#e8e8e8", "dim": "#9aa3ad", "accent": "#4ea1ff",
      "ok": "#3fb950", "warn": "#d29922", "err": "#f85149", "rec": "#ff3b30"}
@@ -183,6 +183,8 @@ class App(tk.Tk):
         self.v_real_enable = tk.BooleanVar(value=self.cfg["real_enable"])
         ttk.Checkbutton(row, text="Enable motors at start (Reset + Enable)",
                         variable=self.v_real_enable).pack(side="left", padx=14)
+        self.v_real_rviz = tk.BooleanVar(value=self.cfg["real_rviz"])
+        ttk.Checkbutton(row, text="RViz: live arms + Quest controllers", variable=self.v_real_rviz).pack(side="left", padx=14)
         self.v_real_park = tk.BooleanVar(value=self.cfg["real_park"])
         ttk.Checkbutton(row, text="Return both arms to the home pose (0, 0, 65, 0, 50, 0) deg before exit (10 deg/s)",
                         variable=self.v_real_park).pack(side="left", padx=14)
@@ -352,7 +354,8 @@ class App(tk.Tk):
                "width": int(w), "height": int(h),
                "left_ip": self.v_real_ips["left"].get().strip(),
                "right_ip": self.v_real_ips["right"].get().strip(), "real_dry_run": self.v_real_dry.get(),
-               "real_park": self.v_real_park.get(), "real_enable": self.v_real_enable.get()}
+               "real_park": self.v_real_park.get(), "real_enable": self.v_real_enable.get(),
+               "real_rviz": self.v_real_rviz.get()}
         if real:
             try:
                 for side in ("left", "right"):
@@ -484,6 +487,10 @@ class App(tk.Tk):
             self._set("teleop", C["err"], f"Ethernet preflight failed: check IP, motor state and CRI ownership; log: {p.log_path.name}")
             return
         self._set("sim", C["ok"], "robot connected")
+        if cfg["real_rviz"]:
+            self._msg("[robot] opening RViz (live arms + Quest controllers)")
+            self.procs["viz"] = Proc("viz", [str(ROOT / "quest_teleop" / "run_teleop_viz.sh"), "--source", "real",
+                                             "--yaw-deg", str(cfg["yaw_deg"])])
         if not self._wait_for(p, r"CloudXR up", 180):
             p.interrupt()
             self._set("teleop", C["err"], f"failed to start - see log: {p.log_path}")
@@ -580,7 +587,7 @@ class App(tk.Tk):
             elif ev[0] == "rec":
                 self._rec_state(ev[1], ev[2])
         for key, p in list(self.procs.items()):
-            if not p.alive() and self.stage != "stopping" and getattr(p, "_reported", False) is False:
+            if key in self.status and not p.alive() and self.stage != "stopping" and getattr(p, "_reported", False) is False:
                 p._reported = True
                 self._set(key, C["err"], f"exited (code {p.p.returncode}), log: {p.log_path.name}")
         self.after(100, self._poll)
@@ -627,7 +634,7 @@ class App(tk.Tk):
                     if not self.procs["record"].alive():
                         break
                     time.sleep(0.5)
-            for key in ("teleop", "sim"):
+            for key in ("teleop", "viz", "sim"):  # RViz stays up while the arms return home
                 if key in self.procs:
                     self.procs[key].interrupt()
                     for _ in range(240 if key == "teleop" and parking else 40):  # the return to 0 deg takes up to ~20 s

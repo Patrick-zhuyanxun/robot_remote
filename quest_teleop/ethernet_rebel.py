@@ -117,6 +117,7 @@ class EthernetArm:
         self.interface = None
         self.program_state = None
         self.position_joints, self.position_time = None, 0.0
+        self.unknown_position_messages = []
         self.version = None
         self.fault = None
         self.moving = self.owns_position = self.enabled_interface = False
@@ -213,8 +214,14 @@ class EthernetArm:
                             self._on_cri(tokens)
                     else:
                         for tokens in pos_frames.feed(data):
+                            if tokens[:1] == ["ERROR"]:  # MSGSTART ERROR UNKNOWN|FORMAT MSGEND: target rejected
+                                raise RobotError(f"Position Interface rejected a message: {' '.join(tokens)}")
                             if tokens[:2] != ["Pos", "J"]:
-                                raise RobotError(f"unexpected Position Interface message: {tokens}")
+                                # e.g. "MSGSTART OK MSGEND", the acknowledgement RobotControl V15 sends for each
+                                # target (not in the V1 document); anything else unknown is ignored but kept.
+                                if tokens[:1] != ["OK"]:
+                                    self.unknown_position_messages.append(tokens[:8])
+                                continue
                             q = tuple(math.radians(x) for x in finite_floats(tokens[2:], 6))
                             with self._changed:
                                 self.position_joints, self.position_time = q, time.monotonic()
