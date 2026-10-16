@@ -53,3 +53,22 @@
 - 修正測試競態：兩臂看門狗同時到期時，`pair.fault` 可能在兩條連線都關閉後才寫入；測試改為等待 fault 寫入。
 - 驗證（皆為假控制器，未連實體手臂）：28 項 unittest 通過（新增 park 單元／整合測試）；端對端以 127.0.0.1 / 127.0.0.2 兩台跟隨目標的假控制器執行實際程式：單次 SIGINT → 兩臂 10 s 回到 0° 並釋放；兩次 SIGINT → 中途停止；GUI Stop all → 回位完成後關閉。
 - 注意：全 0° 是直立的奇異姿態；從工作姿態回 0° 為關節空間直線，未檢查與支架、桌面、相機的碰撞，現場需確認路徑淨空。`real-ros` 舊後端不回位。
+
+## 第二輪審查（2026-10-16，Sonnet 唯讀審查 → Claude 修正）
+
+未發現會讓手臂意外移動或無法停止的問題；以下皆為「安全方向」的失敗（跳過回位、誤停兩臂、清理指令沒送到），已修正並各有回歸測試（修正前的程式碼上會失敗）：
+- Ctrl+C / Stop all 若剛好落在送命令途中，傳輸層會整個關閉 → 跳過回位。改為 SIGINT/SIGTERM 只設停止旗標，迴圈在 tick 邊界結束；`EthernetArms.send()` 遇 KeyboardInterrupt 不再關閉連線。啟動階段 SIGTERM 改為直接中止（rclpy 原本只把 ok() 設 False）。
+- 握持第一拍：快照與即時讀值不同步，只有 0.067° 餘裕。`target()` 在串流開始的第一拍額外容許 0.5°；實機加入握把遲滯（≥ clutch+0.1 接合、< clutch-0.1 放開），且啟動後須先放開一次才能第一次接合。
+- `abort()` 直接 close 帶未讀資料的 socket 會變 RST，QUIT 常送不到（40 次中只到 13–17 次）、`SetPositionInterface false` 偶爾遺失（持久化設定）。改為半關閉後讀到 EOF（≤ 0.3 s）再關。
+- 回位途中的 OSError 等例外會跳過 `xr.close()`：`park_on_exit` 改捕捉所有 Exception，收尾用巢狀 finally。`--park-deg` 超出關節限位時拒絕移動。
+- CRI 以 strict ASCII 解碼，非 ASCII 程式名稱會讓兩臂停機：改 latin-1；RUNSTATE 執行狀態改從欄位尾端取（程式名稱可含空白）。
+- GUI：SIGTERM 3 s 後升級 SIGKILL；回位中關閉視窗會先詢問。
+- 驗證：34 項測試通過；實際程式 + 兩台跟隨假控制器，SIGINT 與 SIGTERM 各一次 → 兩臂 10 s 回到 0°、釋放 Position Interface、送出 QUIT。
+
+尚未處理（需實機確認）：
+- `UsePositionInterface true` 後立即送目標，控制器的平均間隔尚未建立；可能需要先以 tick 頻率重送數次目前姿態暖機。
+- 每拍上限以「拍」計而非實際時間；IK 耗時抖動可能讓瞬間速度略高於名目值（0.9 係數僅部分抵銷）。
+- 追隨誤差用 Position Interface 的 `Pos J` 比較；若該值是插值設定點而非編碼器，檢查會失效，可再與 STATUS `POSJOINTCURRENT` 交叉比對。
+- 全 0° 為奇異姿態，控制器若在接近時回報 KINSTATE 21–24，回位會在差幾度處中止（"failed, arms stopped"）。
+- 每次執行會切換持久化的 `SetPositionInterface`；若可接受常開，可考慮不關。
+- 單臂 ACK 慢於約 0.2 s 會觸發另一臂看門狗 → 兩臂安全停止，但不回位。

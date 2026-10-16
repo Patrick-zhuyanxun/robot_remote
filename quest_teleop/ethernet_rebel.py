@@ -30,7 +30,9 @@ class Frames:
         self.start, self.end, self.buffer = start, end, ""
 
     def feed(self, data):
-        self.buffer += data.decode("ascii", errors="strict")
+        # latin-1 maps every byte, so a non-ASCII program / frame name (or a split multi-byte
+        # character) cannot fault the link; all fields we parse are ASCII.
+        self.buffer += data.decode("latin-1")
         if len(self.buffer) > 262144:
             raise RobotError("oversized / unterminated robot message")
         out = []
@@ -101,10 +103,14 @@ def load_endpoints(config=DEFAULT_CONFIG, left_ip=None, right_ip=None):
 
 class EthernetArm:
     def __init__(self, side, host, cri_port=3920, state_timeout=0.5, command_timeout=0.25,
-                 max_joint_vel=0.35, max_track_error=math.radians(15), rate=30):
+                 max_joint_vel=0.35, max_track_error=math.radians(15), rate=30,
+                 engage_tolerance=math.radians(0.5)):
         self.side, self.host, self.cri_port = side, host, cri_port
         self.state_timeout, self.command_timeout = state_timeout, command_timeout
         self.max_joint_vel, self.max_track_error, self.rate = max_joint_vel, max_track_error, rate
+        # First target of a stream is checked against the live pose, which may have moved a little (encoder
+        # noise, settling after release) since the caller's snapshot: allow this much extra, once.
+        self.engage_tolerance = engage_tolerance
         self.cri = self.position = None
         self.status = None
         self.active = None
@@ -181,7 +187,7 @@ class EthernetArm:
             elif kind in ("CMDACK", "CMDERROR"):
                 self._acks[int(body[0])] = " ".join(body[1:]) if kind == "CMDERROR" else None
             elif kind == "RUNSTATE" and body[:1] == ["MAIN"]:
-                self.program_state = int(body[5])
+                self.program_state = int(body[-2])  # <run state> <replay mode> are last; names may contain spaces
             elif kind == "INFO" and body[:1] == ["Version"]:
                 self.version = " ".join(body[1:])
             self._changed.notify_all()
@@ -271,7 +277,8 @@ class EthernetArm:
             raise RobotError(f"{self.side}: excessive joint following error")
         previous = self.last_target if self.moving else measured
         # A delayed tick never grants a larger step. This also rejects jumps on engagement.
-        if max(abs(x-y) for x, y in zip(q, previous)) > self.max_joint_vel / self.rate + 1e-6:
+        limit = self.max_joint_vel / self.rate + (0.0 if self.moving else self.engage_tolerance)
+        if max(abs(x-y) for x, y in zip(q, previous)) > limit + 1e-6:
             raise RobotError(f"{self.side}: target exceeds per-tick joint speed limit")
         if not self.moving:
             self.owns_position = True
@@ -327,7 +334,17 @@ class EthernetArm:
             if self.cri is not None:
                 try:
                     self._send("QUIT")
-                    self.cri.shutdown(socket.SHUT_RDWR)
+                    # Half-close and read until the robot closes (<= 0.3 s): an immediate close with unread
+                    # STATUS data queued becomes a TCP RST, and the robot may then drop the commands above.
+                    self.cri.shutdown(socket.SHUT_WR)
+                    self.cri.settimeout(.05)
+                    end = time.monotonic() + .3
+                    while time.monotonic() < end:
+                        try:
+                            if not self.cri.recv(65536):
+                                break
+                        except socket.timeout:
+                            continue
                 except OSError:
                     pass
                 self.cri.close()
@@ -389,6 +406,8 @@ class EthernetArms:
                     arm.target(commands[side])
                 else:
                     arm.hold()
+        except KeyboardInterrupt:
+            raise  # an exit request, not a fault: keep the links so the caller can still park
         except BaseException:
             self.close()
             raise

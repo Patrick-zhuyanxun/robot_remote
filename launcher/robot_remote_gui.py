@@ -123,8 +123,13 @@ class Proc:
             os.killpg(self.p.pid, signal.SIGINT)
 
     def kill(self):
+        """SIGTERM, then SIGKILL after 3 s (a hung process ignores the polite request)."""
         if self.alive():
             os.killpg(self.p.pid, signal.SIGTERM)
+            try:
+                self.p.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(self.p.pid, signal.SIGKILL)
 
 
 class App(tk.Tk):
@@ -629,6 +634,11 @@ class App(tk.Tk):
         threading.Thread(target=_stop, daemon=True).start()
 
     def on_close(self):
+        if self.stage == "stopping":  # closing the window now would be a second Stop all
+            if messagebox.askyesno("Stop the arms?", "The arms are still returning to 0 deg.\n"
+                                   "Stop them where they are and close?", icon="warning"):
+                self.stop_all()
+            return
         if any(p.alive() for p in self.procs.values()):
             if messagebox.askyesno("Quit", "Stop all processes (an open episode is saved first) and close?"):
                 self.stop_all()

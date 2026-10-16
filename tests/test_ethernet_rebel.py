@@ -113,6 +113,7 @@ class FakeRobot:
                             self.in_use = body[-1] == "true"
                             self.reply(f"CMDACK {counter}")
                     elif category == "QUIT":
+                        self.cri.close()  # like the real server: QUIT closes the connection
                         return
         except (OSError, ValueError):
             pass
@@ -299,6 +300,53 @@ class DualTransportTests(unittest.TestCase):
             self.connect()
         self.assert_pair_closed()
         self.assertFalse(any(cmd[:2] == ("CMD", "UsePositionInterface") for cmd in self.right.commands))
+
+    def test_non_ascii_and_spaced_names_do_not_fault(self):
+        frames = Frames()
+        out = frames.feed("CRISTART 3 RUNSTATE MAIN Prüfung 1.xml sub prog.xml 12 3 0 2 CRIEND".encode("utf-8")[:30])
+        out += frames.feed("CRISTART 3 RUNSTATE MAIN Prüfung 1.xml sub prog.xml 12 3 0 2 CRIEND".encode("utf-8")[30:])
+        self.assertEqual(out[0][-2:], ["0", "2"])  # run state / replay mode read from the end
+        self.connect()
+        self.left.cri.sendall("CRISTART 9 RUNSTATE MAIN Prüfung 1.xml a b.xml 1 1 0 0 CRIEND\n".encode("utf-8"))
+        time.sleep(.2)
+        self.assertIsNone(self.pair.fault)
+        self.assertEqual(self.pair.arms["left"].program_state, 0)
+
+    def test_keyboard_interrupt_in_send_keeps_links_for_park(self):
+        self.connect()
+        arm = self.pair.arms["left"]
+        real_target = arm.target
+
+        def interrupted(q):
+            raise KeyboardInterrupt
+        arm.target = interrupted
+        with self.assertRaises(KeyboardInterrupt):
+            self.pair.send({"left": [.001] * 6})
+        arm.target = real_target
+        self.assertFalse(self.pair._closed.is_set())
+        self.pair.send({"left": [.001] * 6})  # still usable (e.g. by park)
+
+    def test_first_target_tolerates_small_drift_once(self):
+        self.connect()
+        self.left.joints_deg = [-0.3] * 6  # live pose moved 0.3 deg AGAINST the step since the snapshot (0)
+        eventually(lambda: abs(self.pair.arms["left"].joints()[0][0] + math.radians(.3)) < 1e-9)
+        self.pair.send({"left": [0.9 * 0.35 / 30] * 6})  # one full teleop step from the stale snapshot
+        with self.assertRaisesRegex(RobotError, "speed limit"):
+            self.pair.send({"left": [0.9 * 0.35 / 30 + math.radians(2)] * 6})  # later ticks: no extra tolerance
+
+    def test_cleanup_commands_are_delivered(self):
+        for _ in range(8):
+            left, right = FakeRobot(), FakeRobot()
+            pair = EthernetArms({"left": left.endpoint, "right": right.endpoint})
+            pair.connect()
+            pair.send({"left": [.001] * 6, "right": [.001] * 6})
+            pair.close()
+            for robot in (left, right):
+                eventually(lambda: ("QUIT",) in robot.commands)
+                self.assertIn(("CONFIG", "SetPositionInterface", "false"), robot.commands)
+                self.assertIn(("CMD", "UsePositionInterface", "false"), robot.commands)
+            left.close()
+            right.close()
 
 
 class ParkTests(unittest.TestCase):

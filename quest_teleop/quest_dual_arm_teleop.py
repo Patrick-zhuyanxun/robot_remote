@@ -367,6 +367,8 @@ def parse_args(argv=None):
 def main():
     args, ros_args = parse_args()
     rclpy.init(args=ros_args)
+    # rclpy only flags SIGTERM (rclpy.ok() -> False) and keeps running; during start-up make it abort instead.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     tcp = tuple(args.tcp) if args.tcp else TCP_PRESETS[args.tcp_preset]
     chain = SerialChain(make_urdf(), "base_link", "link6", ARM_JOINTS, tcp_xyz=tcp)
     node = DualArmTeleop(args, chain)
@@ -393,6 +395,11 @@ def park_on_exit(node, args, log):
     if node.ethernet.fault or node.ethernet._closed.is_set():
         log.error(f"[park] not returning to {args.park_deg} deg: {node.ethernet.fault or 'link already closed'}")
         return
+    chain = next(iter(node.arms.values())).chain
+    q_park = np.deg2rad(args.park_deg)
+    if np.any(q_park < chain.lower) or np.any(q_park > chain.upper):
+        log.error(f"[park] --park-deg {args.park_deg} is outside the joint limits - not moving")
+        return
     signal.signal(signal.SIGINT, signal.default_int_handler)  # rclpy's handler would swallow a second Ctrl+C
     signal.signal(signal.SIGTERM, signal.default_int_handler)
 
@@ -404,11 +411,11 @@ def park_on_exit(node, args, log):
                 return f"arms {d * 100:.1f} cm apart - finish the return by hand"
         return None
     try:
-        node.ethernet.park(np.deg2rad(args.park_deg), np.deg2rad(args.park_vel_deg),
+        node.ethernet.park(q_park, np.deg2rad(args.park_vel_deg),
                            log=lambda m: log.warning(m), guard=guard)
     except KeyboardInterrupt:
         log.error("[park] interrupted - arms stopped where they are")
-    except RobotError as exc:
+    except Exception as exc:  # RobotError, socket errors, anything else: the arms are stopped by close()
         log.error(f"[park] failed, arms stopped: {exc}")
 
 
@@ -438,10 +445,24 @@ def run_session(node, chain, args):
     # Ethernet: stay 10 % under the transport's per-tick limit, so encoder noise between the engage snapshot and
     # the first streamed target can never trip it (that check would stop both arms).
     max_dq = args.max_joint_vel * dt * (0.9 if node.ethernet else 1.0)
+    # Real arms: hysteresis on the grip (engage above clutch+0.1, release below clutch-0.1), and the operator
+    # must show an open hand once before the first engage.
+    hyst = 0.1 if node.real else 0.0
+    on_th, off_th = args.clutch + hyst, args.clutch - hyst
+    for arm in node.arms.values():
+        arm.need_regrip = node.real
     both = len(node.arms) == 2
     last_buttons = {}
+    # Ctrl+C / SIGTERM (GUI Stop all) only request a stop; the loop ends at a tick boundary, never in the
+    # middle of a robot command, so the exit path can still return the arms to the park pose.
+    stop = {"requested": False}
+
+    def request_stop(signum, frame):
+        stop["requested"] = True
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(sig, request_stop)
     try:
-        while rclpy.ok():
+        while rclpy.ok() and not stop["requested"]:
             t0 = time.perf_counter()
             rclpy.spin_once(node, timeout_sec=0.0)
             readings = xr.read_all()
@@ -469,12 +490,12 @@ def run_session(node, chain, args):
                                     else f"arm lags its command by {lag:.0f} deg") + " - release and grip again")
                         continue
                 if getattr(arm, "need_regrip", False):
-                    if squeeze < args.clutch:
+                    if squeeze < off_th:
                         arm.need_regrip = False
                     continue
                 p_b = r_base_op.apply(pos)
                 r_b = r_base_op * Rotation.from_quat(quat) * r_base_op.inv()
-                if squeeze >= args.clutch and not arm.engaged:
+                if squeeze >= on_th and not arm.engaged:
                     t_now = chain.fk(arm.q_meas)
                     arm.home_p, arm.home_r = t_now[:3, 3].copy(), Rotation.from_matrix(t_now[:3, :3])
                     arm.origin_p, arm.origin_r = p_b.copy(), r_b
@@ -487,7 +508,7 @@ def run_session(node, chain, args):
                     arm.reach = max(args.max_reach, float(np.linalg.norm(arm.home_p - arm.shoulder)))
                     arm.engaged = True
                     log.info(f"[{side}] engaged")
-                elif squeeze < args.clutch and arm.engaged:
+                elif squeeze < off_th and arm.engaged:
                     arm.engaged = False
                     log.info(f"[{side}] released")
                 if arm.engaged:
@@ -623,10 +644,14 @@ def run_session(node, chain, args):
         raise
     finally:
         # Return to the park pose on a clean exit, then stop physical streams before the slow CloudXR shutdown.
-        park_on_exit(node, args, log)
-        if node.ethernet:
-            node.ethernet.close()
-        xr.close()
+        try:
+            park_on_exit(node, args, log)
+        finally:
+            try:
+                if node.ethernet:
+                    node.ethernet.close()
+            finally:
+                xr.close()
 
 
 if __name__ == "__main__":

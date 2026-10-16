@@ -182,6 +182,79 @@ class NodeIntegrationTests(unittest.TestCase):
             left.close()
             right.close()
 
+    def test_sigint_during_session_ends_cleanly_and_parks(self):
+        import os
+        import signal
+        left, right = FakeRobot(), FakeRobot()
+        left.joints_deg = [0, 10, 60, 0, 30, 0]
+        right.joints_deg = [5, 10, 60, 0, 30, -5]
+        for robot in (left, right):
+            robot.follow = True
+        node = None
+        rclpy.init()
+        try:
+            args, _ = teleop.parse_args(["--backend", "real", "--quiet", "--park-vel-deg", "30"])
+            chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
+                                       tcp_xyz=teleop.TCP_PRESETS["flange"])
+            with patch.object(teleop, "load_endpoints", return_value={"left": left.endpoint, "right": right.endpoint}):
+                node = teleop.DualArmTeleop(args, chain)
+
+            class SignalQuest:  # Stop all = SIGTERM / Ctrl+C = SIGINT arriving between Quest reads
+                buttons = {}
+                ticks = 0
+                closed = False
+
+                def __init__(self, *unused):
+                    pass
+
+                def read_all(self):
+                    self.ticks += 1
+                    if self.ticks == 3:
+                        os.kill(os.getpid(), signal.SIGTERM)
+                    idle = (True, np.zeros(3), np.array([0, 0, 0, 1]), 0.0, 0.0)
+                    return {"left": idle, "right": idle}
+
+                def close(self):
+                    self.closed = True
+
+            quest = SignalQuest()
+            with patch.object(teleop, "QuestController", return_value=quest):
+                teleop.run_session(node, chain, args)
+            self.assertTrue(quest.closed)
+            for robot in (left, right):
+                np.testing.assert_allclose(robot.joints_deg, np.zeros(6), atol=1e-6)
+        finally:
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            if node:
+                node.destroy_node()
+            rclpy.try_shutdown()
+            left.close()
+            right.close()
+
+    def test_park_errors_never_escape(self):
+        import threading
+
+        class Link:
+            fault = None
+            _closed = threading.Event()
+
+            def park(self, *a, **k):
+                raise BrokenPipeError("robot closed")
+        chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS)
+        stub = type("Node", (), {"ethernet": Link(), "arms": {"left": type("A", (), {"chain": chain})()}})()
+        args, _ = teleop.parse_args(["--backend", "real", "--arms", "left"])
+        logged = []
+        log = type("L", (), {"error": lambda self, m: logged.append(m), "warning": lambda self, m: None})()
+        teleop.park_on_exit(stub, args, log)  # must not raise
+        self.assertIn("failed", logged[-1])
+        args.park_deg = [0, 0, 0, 0, 0, 400]
+        teleop.park_on_exit(stub, args, log)
+        self.assertIn("outside the joint limits", logged[-1])
+        import signal
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
     def test_park_skipped_without_ethernet_link(self):
         args, _ = teleop.parse_args(["--backend", "real", "--dry-run"])
         self.assertTrue(args.dry_run)  # dry run never parks (park_on_exit returns before any motion)
