@@ -392,6 +392,18 @@ class EthernetArm:
             self._thread.join(timeout=1)
 
 
+def watch_arm(side, host, cri_port=3920, state_timeout=0.5):
+    """Read-only CRI link to an arm this program does NOT drive (e.g. someone else is using it): only its
+    STATUS joint angles are read, for the inter-arm collision guard. Never configures the Position
+    Interface or sends commands; if this connection was made the active one (nobody else connected), it
+    hands that back at once with SetActive false so it cannot get in the other operator's way."""
+    arm = EthernetArm(side, host, cri_port, state_timeout=state_timeout)
+    arm.connect()
+    if arm.active:
+        arm._send("CMD", "SetActive false")
+    return arm
+
+
 class EthernetArms:
     """All selected arms must pass preflight; any transport fault closes the pair."""
     def __init__(self, endpoints, sides=("left", "right"), dry_run=False, enable_motors=False, **limits):

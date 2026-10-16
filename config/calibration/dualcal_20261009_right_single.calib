@@ -1,0 +1,22 @@
+# rebel_dual_arm_calibration 2026-10-09, camera_link in the RIGHT arm's base frame (camera-only joint solve of 70 left + 60 right samples, built-in camera_info, NOT yet verified by touches).
+# For the SINGLE-arm stack driving the right arm (frames base_link / xeg32_tool_tip).
+parameters:
+  name: dualcal_20261009_right_single
+  calibration_type: eye_on_base
+  robot_base_frame: base_link
+  robot_effector_frame: xeg32_tool_tip
+  tracking_base_frame: camera_link
+  tracking_marker_frame: calib_target_right
+  freehand_robot_movement: true
+  move_group_namespace: /
+  move_group: igus_rebel_arm
+transform:
+  translation:
+    x: -0.03662528713732943
+    y: 0.22603478628614634
+    z: 0.8673782751006405
+  rotation:
+    x: 0.03177128028541763
+    y: 0.38649562567014845
+    z: -0.020655469278752985
+    w: 0.9215123811841817

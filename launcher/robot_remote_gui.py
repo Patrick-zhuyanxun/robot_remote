@@ -535,7 +535,7 @@ class App(tk.Tk):
             self.events.put(("rec", "teleop", 0))
 
     def _on_line(self, name, line):
-        if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go", "RobotError", "[park]", "motors enabled",
+        if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go", "RobotError", "[park]", "motors enabled", "watching the", "apart (surface", "guard blind",
                                                          "start pose", "dry run")):
             self._msg(f"[robot] {line.split(']: ')[-1]}")
         if name == "teleop":

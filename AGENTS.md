@@ -83,3 +83,10 @@
 - `ros2 launch real_robot/rviz_pretest.launch.py arm:=left|right [enable_motors:=false] [hardware_protocol:=mock_hardware]`（使用者要求用 ros2 launch，不用 sh）：include `igus_rebel/rebel.launch.py`（IP 取自 `config/real_arms.json`）+ 6 s 後 `ros2 service call /igus_rebel/reset_and_enable` + `move_group.launch.py`（RViz），全部以 SetEnvironmentVariable 設為 ROS_DOMAIN_ID 91、localhost only。mock 已驗證（driver 環境變數正確、/joint_states 可讀、Ctrl+C 無殘留）；啟用步驟只能實機驗證。不再檢查 Quest 遙控是否同時執行，操作者須自行先關閉。
 - 使用者以 Quest 乙太網路版啟動時遇到 `_MNE`（舊 ROS driver 關閉後馬達停用）。新增 `EthernetArm.enable_motors()` / `--enable-motors`：僅在 ESTOP=3、CRI active、無程式執行、錯誤只有 MNE（關節碼 0/4、KINSTATE 0/99）時送 Reset → Enable，並等待 STATUS 變為無問題（≤ 6 s），否則拒絕。Reset 也會重置機器人的數位輸出。新增 3 項測試，共 37 項通過。
 - 手冊 Real robot 頁新增「1 · RViz pre-test」分頁（按鈕燈色、一條指令流程、不動時的排查）。
+
+## 兩臂相對碰撞防護（2026-10-16，Claude）
+
+- 使用者提供手眼校正 `config/calibration/dualcal_20261012_left_hovercorr.calib`、`dualcal_20261009_right_single.calib`（camera_link 在各臂 base_link，皆標示未驗證）。`config/arm_calibration.json` 整理兩者；由此推得右臂底座在左臂座標系 (−0.007, −0.448, 0.005) m、約 3° yaw / 1° roll（文件記載實體臂距 0.448 m 吻合；模擬 USD 為 0.460 m、無偏轉）。
+- 新 `quest_teleop/arm_collision.py`：每臂以膠囊表示（J1→J2→…→J6→法蘭，法蘭→XEG-32 夾爪中心、法蘭→刀尖；半徑 `--arm-radius 0.06`、`--tool-radius 0.04`），兩臂表面最小間距 < `--min-arm-dist`（預設改為 0.05 m 表面間距；舊版為 12 cm 點距離）且下一步會更近時拒絕該步並要求重新握持。實體後端用校正底座（world = camera_link），模擬用 USD 底座。回位（park）也使用同一 guard。
+- Ethernet 只選一臂時，另一臂以唯讀 CRI 連線（`watch_arm()`：只讀 STATUS，若成為 active 立即 `SetActive false`，從不設定 Position Interface、不送 Reset/Enable）提供姿態給 guard；其狀態逾時則被驅動的手臂保持不動。`--no-watch-other` 關閉（無兩臂保護）。
+- 驗證：segment 距離函式 300 組隨機暴力比對；新增 3 項整合／單元測試（左臂被假 Quest 推向右臂：有旁觀時停在 4.7 cm、旁觀臂只收到查詢與 SetActive false；不旁觀時越過 5 cm；校正臂距 0.448 m、home 間距 > 0.2 m、J1 −90° 伸展時重疊），共 40 項通過。未在實機驗證。未建模：支架、桌面、相機；膠囊半徑為估計值。

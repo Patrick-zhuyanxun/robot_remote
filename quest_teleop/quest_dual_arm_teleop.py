@@ -38,7 +38,8 @@ from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from quest_arm_teleop import ARM_JOINTS, HOME_DEG, TCP_PRESETS, QuestController, SerialChain, step_toward
-from ethernet_rebel import DEFAULT_CONFIG, EthernetArms, RobotError, load_endpoints
+from ethernet_rebel import DEFAULT_CONFIG, EthernetArms, RobotError, load_endpoints, watch_arm
+from arm_collision import DEFAULT_CALIBRATION, capsules, clearance, load_world_T_base
 
 HERE = Path(__file__).resolve().parent
 SIDES = ("left", "right")
@@ -110,25 +111,10 @@ class Arm:
         self.m_tool_ctrl = Rotation.identity()
         self.raw_quat = np.array([0.0, 0.0, 0.0, 1.0])
 
-    def points_world(self, q):
-        """Guard points in the rig frame: wrist (joint5 origin) plus flange, XEG-32 jaw centre and knife
-        tip - always all of them, whatever --tcp-preset is, so the ~18 cm of tooling past the flange
-        is covered by the inter-arm guard."""
-        t = np.eye(4)
-        k = 0
-        wrist = None
-        for t_o, axis, idx in self.chain.elems[:-1]:  # last element = the fixed TCP offset
-            t = t @ t_o
-            if axis is not None:
-                if k == 4:
-                    wrist = t[:3, 3].copy()
-                r = np.eye(4)
-                r[:3, :3] = Rotation.from_rotvec(axis * q[idx]).as_matrix()
-                t = t @ r
-                k += 1
-        tool = [t[:3, :3] @ np.array(TCP_PRESETS[n]) + t[:3, 3] for n in ("flange", "gripper", "eef")]
-        pts = np.stack([wrist, *tool])
-        return (self.world_T_base[:3, :3] @ pts.T).T + self.world_T_base[:3, 3]
+    def capsules(self, q):
+        """Collision capsules of this arm (links + flange + XEG-32 + knife, whatever --tcp-preset is) in the
+        shared world frame, for the inter-arm guard."""
+        return capsules(self.chain, np.asarray(q), self.world_T_base, self.args.arm_radius, self.args.tool_radius)
 
 
 class DualArmTeleop(Node):
@@ -136,6 +122,14 @@ class DualArmTeleop(Node):
         super().__init__("quest_dual_arm_teleop")
         self.args = args
         self.arms = {s: Arm(s, chain, args) for s in args.arms}
+        # Real arms: place the bases from the hand-eye calibrations (world = camera_link); sim: USD poses.
+        self.base_poses = {}
+        if args.backend != "isaac":
+            self.base_poses = load_world_T_base(args.calibration)
+            for side, arm in self.arms.items():
+                arm.world_T_base = self.base_poses[side]
+        self.watch = None          # read-only link to the arm we do NOT drive (Ethernet, one arm selected)
+        self.watch_side = None
         self.real = args.backend != "isaac"
         self.ethernet = None
         if args.backend == "real":
@@ -199,12 +193,36 @@ class DualArmTeleop(Node):
                 self.arms[side].q_meas, self.arms[side].t_meas = np.array(q), stamp
                 self.all_q[side] = np.array(q)
 
+    def other_arm(self):
+        """(side, capsules) of the watched arm from its latest STATUS, or (side, None) if that is stale."""
+        if self.watch is None:
+            return None, None
+        with self.watch._lock:
+            st, fault = self.watch.status, self.watch.fault
+        if fault or st is None or time.monotonic() - st.received > self.args.state_timeout:
+            return self.watch_side, None
+        return self.watch_side, capsules(self.arms[next(iter(self.arms))].chain, np.array(st.joints),
+                                         self.base_poses[self.watch_side], self.args.arm_radius, self.args.tool_radius)
+
     def destroy_node(self):
+        if self.watch:
+            self.watch.close()
         if self.ethernet:
             self.ethernet.close()
         return super().destroy_node()
 
     def wait_ready(self):
+        if self.ethernet and len(self.arms) == 1 and not self.args.no_watch_other:
+            other = next(s for s in SIDES if s not in self.arms)
+            ep = load_endpoints(self.args.config, self.args.left_ip, self.args.right_ip)[other]
+            try:
+                self.watch = watch_arm(other, ep["host"], ep["cri_port"], self.args.state_timeout)
+                self.watch_side = other
+                self.get_logger().info(f"watching the {other} arm read-only at {ep['host']} for the collision guard "
+                                       f"(joints [deg] {np.round(np.rad2deg(self.watch.status.joints), 1).tolist()})")
+            except (OSError, RobotError) as exc:
+                raise RobotError(f"cannot read the {other} arm for the collision guard ({exc}); "
+                                 "fix the link or pass --no-watch-other (no inter-arm protection)") from exc
         if self.ethernet:
             self.ethernet.connect()
             for side in self.ethernet.enabled:
@@ -342,8 +360,14 @@ def parse_args(argv=None):
     p.add_argument("--rot-weight", type=float, default=1.0, help="orientation gain of the secondary IK task")
     p.add_argument("--clutch", type=float, default=0.5, help="squeeze threshold")
     p.add_argument("--max-reach", type=float, default=0.55, help="EE target clamp around the shoulder [m]")
-    p.add_argument("--min-arm-dist", type=float, default=0.12,
-                   help="inter-arm guard: TCP/wrist points of the two arms may not get closer than this [m]")
+    p.add_argument("--min-arm-dist", type=float, default=0.05,
+                   help="inter-arm guard: smallest allowed surface clearance between the two arms' capsules [m]")
+    p.add_argument("--arm-radius", type=float, default=0.06, help="capsule radius of the arm links [m]")
+    p.add_argument("--tool-radius", type=float, default=0.04, help="capsule radius of flange/gripper/knife [m]")
+    p.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION,
+                   help="real arms: hand-eye calibrations that place both arm bases (camera_link in each base)")
+    p.add_argument("--no-watch-other", action="store_true",
+                   help="Ethernet, one arm: do not read the other arm (then there is NO inter-arm protection)")
     p.add_argument("--gripper-open", type=float, default=0.00483688, help="carriage pos at trigger 0 [m]")
     p.add_argument("--gripper-closed", type=float, default=-0.0116631, help="carriage pos at trigger 1 [m]")
     p.add_argument("--no-home", action="store_true")
@@ -355,7 +379,8 @@ def parse_args(argv=None):
     if len(set(args.arms)) != len(args.arms):
         p.error("--arms must not contain duplicates")
     for key in ("rate", "state_timeout", "command_timeout", "max_joint_vel", "max_lin_vel", "max_rot_vel",
-                "max_track_err_deg", "max_lead_deg", "max_lead_m", "max_reach", "scale", "min_arm_dist", "park_vel_deg"):
+                "max_track_err_deg", "max_lead_deg", "max_lead_m", "max_reach", "scale", "min_arm_dist", "park_vel_deg",
+                "arm_radius", "tool_radius"):
         if not np.isfinite(getattr(args, key)) or getattr(args, key) <= 0:
             p.error(f"--{key.replace('_', '-')} must be finite and positive")
     if args.backend != "isaac":
@@ -410,11 +435,17 @@ def park_on_exit(node, args, log):
     signal.signal(signal.SIGTERM, signal.default_int_handler)
 
     def guard(cmd):
-        if len(cmd) == 2 and args.min_arm_dist > 0:
-            a, b = (node.arms[s].points_world(np.array(cmd[s])) for s in SIDES)
-            d = np.min(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2))
+        caps = [node.arms[s].capsules(cmd[s]) for s in cmd]
+        if len(caps) == 1:
+            side, other = node.other_arm()
+            if node.watch is not None and other is None:
+                return f"lost the {side} arm's state - finish the return by hand"
+            if other is not None:
+                caps.append(other)
+        if len(caps) == 2:
+            d = clearance(*caps)
             if d < args.min_arm_dist:
-                return f"arms {d * 100:.1f} cm apart - finish the return by hand"
+                return f"arms {d * 100:.1f} cm apart (surface clearance) - finish the return by hand"
         return None
     try:
         node.ethernet.park(q_park, np.deg2rad(args.park_vel_deg),
@@ -576,23 +607,35 @@ def run_session(node, chain, args):
                     grips[side] = args.gripper_open + (args.gripper_closed - args.gripper_open) * trigger
                     arm.last_trig = trigger
 
-            # Inter-arm guard: refuse any step that brings the arms' TCP/wrist points closer than
-            # --min-arm-dist while also decreasing their distance (moving apart is always allowed).
-            if both and cand:
-                def min_dist(qs):
-                    a = node.arms["left"].points_world(qs["left"])
-                    b = node.arms["right"].points_world(qs["right"])
-                    return np.min(np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2))
-                now = {s: (node.arms[s].q_meas if node.ethernet else node.arms[s].q_cmd) for s in SIDES}
-                nxt = {s: cand.get(s, now[s]) for s in SIDES}
-                d_now, d_next = min_dist(now), min_dist(nxt)
-                if d_next < args.min_arm_dist and d_next < d_now:
-                    log.warning(f"arms {d_next * 100:.1f} cm apart - holding both (move them apart)",
-                             throttle_duration_sec=1.0)
+            # Inter-arm guard (capsule model, bases from the hand-eye calibrations on the real arms): refuse any
+            # step that brings the two arms' surfaces closer than --min-arm-dist while also reducing the
+            # clearance (moving apart is always allowed). With one driven arm the other arm is the watched one,
+            # read-only from its controller; if its state is stale the driven arm holds.
+            if cand and (both or node.watch is not None):
+                now = {s: (node.arms[s].q_meas if node.ethernet else node.arms[s].q_cmd) for s in node.arms}
+                nxt = {s: cand.get(s, now[s]) for s in node.arms}
+                if both:
+                    d_now = clearance(node.arms["left"].capsules(now["left"]), node.arms["right"].capsules(now["right"]))
+                    d_next = clearance(node.arms["left"].capsules(nxt["left"]), node.arms["right"].capsules(nxt["right"]))
+                    other_side, stale = None, False
+                else:
+                    (side_d,) = node.arms
+                    other_side, other = node.other_arm()
+                    stale = other is None
+                    if not stale:
+                        d_now = clearance(node.arms[side_d].capsules(now[side_d]), other)
+                        d_next = clearance(node.arms[side_d].capsules(nxt[side_d]), other)
+                if stale:
+                    log.warning(f"no fresh state from the {other_side} arm - holding (collision guard blind)",
+                                throttle_duration_sec=1.0)
                     cand = {}
-                    if node.ethernet:
-                        for arm in node.arms.values():
-                            arm.engaged, arm.need_regrip = False, True
+                elif d_next < args.min_arm_dist and d_next < d_now:
+                    log.warning(f"arms {d_next * 100:.1f} cm apart (surface clearance) - holding (move them apart)",
+                                throttle_duration_sec=1.0)
+                    cand = {}
+                if not cand and node.ethernet:
+                    for arm in node.arms.values():
+                        arm.engaged, arm.need_regrip = False, True
 
             for side, q in cand.items():
                 node.arms[side].q_cmd = q

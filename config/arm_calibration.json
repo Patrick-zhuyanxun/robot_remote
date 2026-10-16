@@ -1,0 +1,15 @@
+{
+  "_comment": "Hand-eye (eye-on-base) results: pose of camera_link in each arm's base_link. The teleop only uses them to place the two arm bases relative to each other for the inter-arm collision guard (right base = 0.448 m from the left base). Sources in config/calibration/. Both marked unverified by their authors (left: hover correction applied, right: not verified by touches).",
+  "camera_in_base": {
+    "left": {
+      "source": "calibration/dualcal_20261012_left_hovercorr.calib",
+      "translation": [-0.048397427117980334, -0.20788777061552297, 0.8681737492514855],
+      "rotation_xyzw": [0.013689160489925646, 0.39062643827362875, -0.001688441995216913, 0.9204459472290422]
+    },
+    "right": {
+      "source": "calibration/dualcal_20261009_right_single.calib",
+      "translation": [-0.03662528713732943, 0.22603478628614634, 0.8673782751006405],
+      "rotation_xyzw": [0.03177128028541763, 0.38649562567014845, -0.020655469278752985, 0.9215123811841817]
+    }
+  }
+}

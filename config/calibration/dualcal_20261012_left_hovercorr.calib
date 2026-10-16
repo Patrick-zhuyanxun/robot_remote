@@ -1,0 +1,26 @@
+# rebel_dual_arm_calibration 2026-10-12, camera_link in the LEFT arm's base frame (joint solve of 70 left + 60 right
+# board samples, built-in camera_info; table images of 2026-10-09 excluded), PLUS the empirical hover-test correction
+# (-5.9, +6.3, 0) mm added to the translation (shifts every perceived point by that vector). Hover test residual with this
+# shift ~1-2 mm lateral, ~2 mm low in z (2026-10-12, provisional knife TCP). Trust gate FAIL (no check points): unverified.
+# Camera without correction: xyz [-0.042497, -0.214188, 0.868174]. Source: scan_results/dual_arm_calibration_20261012/calib2.yaml
+# For the SINGLE-arm stack driving the left arm (frames base_link / xeg32_tool_tip).
+parameters:
+  name: dualcal_20261012_left_hovercorr
+  calibration_type: eye_on_base
+  robot_base_frame: base_link
+  robot_effector_frame: xeg32_tool_tip
+  tracking_base_frame: camera_link
+  tracking_marker_frame: calib_target_left
+  freehand_robot_movement: true
+  move_group_namespace: /
+  move_group: igus_rebel_arm
+transform:
+  translation:
+    x: -0.048397427117980334
+    y: -0.20788777061552297
+    z: 0.8681737492514855
+  rotation:
+    x: 0.013689160489925646
+    y: 0.39062643827362875
+    z: -0.001688441995216913
+    w: 0.9204459472290422

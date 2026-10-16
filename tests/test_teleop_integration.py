@@ -255,6 +255,84 @@ class NodeIntegrationTests(unittest.TestCase):
         signal.signal(signal.SIGINT, signal.default_int_handler)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
+    def _drive_left_toward_right(self, extra_args, ticks=110):
+        """Left arm driven by a fake Quest hand moving 40 cm toward the right arm; the right arm is someone
+        else's (only watched). Returns (min clearance over the run, right-arm CRI commands)."""
+        from arm_collision import capsules, clearance, load_world_T_base
+        left, right = FakeRobot(), FakeRobot()
+        left.joints_deg = [0, 30, 60, 0, 40, 0]
+        right.joints_deg = list(teleop.HOME_DEG)
+        left.follow = True
+        node = None
+        rclpy.init()
+        try:
+            args, _ = teleop.parse_args(["--backend", "real", "--arms", "left", "--quiet", "--no-park",
+                                         "--max-lin-vel", "0.3", "--max-joint-vel", "0.6", *extra_args])
+            chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
+                                       tcp_xyz=teleop.TCP_PRESETS["flange"])
+            with patch.object(teleop, "load_endpoints", return_value={"left": left.endpoint, "right": right.endpoint}):
+                node = teleop.DualArmTeleop(args, chain)
+                W = load_world_T_base()
+                rcaps = capsules(chain, np.deg2rad(right.joints_deg), W["right"], .06, .04)
+                seen = []
+
+                class TowardRight:
+                    buttons = {}
+                    tick = 0
+
+                    def __init__(self, *unused):
+                        pass
+
+                    def read_all(self):
+                        self.tick += 1
+                        if self.tick > ticks:
+                            raise KeyboardInterrupt
+                        seen.append(clearance(capsules(chain, np.deg2rad(left.joints_deg), W["left"], .06, .04), rcaps))
+                        y = -min(0.4, max(0, self.tick - 3) * 0.006)  # operator right = toward the right arm
+                        squeeze = 0.0 if self.tick < 3 else 1.0
+                        hand = (True, np.array([0, y, 0]), np.array([0, 0, 0, 1]), squeeze, 0)
+                        return {"left": hand, "right": hand}
+
+                    def close(self):
+                        pass
+                with patch.object(teleop, "QuestController", return_value=TowardRight()):
+                    teleop.run_session(node, chain, args)
+            return min(seen), seen[0], list(right.commands)
+        finally:
+            import signal
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            if node:
+                node.destroy_node()
+            rclpy.try_shutdown()
+            left.close()
+            right.close()
+
+    def test_watched_other_arm_stops_the_driven_arm_before_contact(self):
+        guarded, start, right_cmds = self._drive_left_toward_right([])
+        self.assertGreater(start, 0.15)
+        self.assertGreaterEqual(guarded, 0.05 - 0.01)  # held at the 5 cm surface clearance (one step of margin)
+        self.assertLess(guarded, 0.08)                 # ...after really approaching it
+        # the watched arm was only read: no Position Interface, no motion, and it handed control back
+        self.assertIn(("CMD", "SetActive", "false"), right_cmds)
+        self.assertFalse(any(c[:2] in (("CMD", "UsePositionInterface"), ("CONFIG", "SetPositionInterface"))
+                             or c[1:2] in (("Enable",), ("Reset",)) for c in right_cmds))
+
+    def test_without_watching_the_other_arm_there_is_no_protection(self):
+        unguarded, _, right_cmds = self._drive_left_toward_right(["--no-watch-other"])
+        self.assertLess(unguarded, 0.04)  # the same motion goes inside the 5 cm margin
+        self.assertFalse(right_cmds)
+
+    def test_calibrated_bases_and_capsule_clearance(self):
+        from arm_collision import capsules, clearance, load_world_T_base
+        W = load_world_T_base()
+        rel = np.linalg.inv(W["left"]) @ W["right"]
+        self.assertAlmostEqual(np.linalg.norm(rel[:3, 3]), 0.448, delta=0.002)  # measured arm spacing
+        chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS)
+        cap = lambda side, qd: capsules(chain, np.deg2rad(qd), W[side], .06, .04)
+        self.assertGreater(clearance(cap("left", teleop.HOME_DEG), cap("right", teleop.HOME_DEG)), 0.2)
+        self.assertLess(clearance(cap("left", [-90, 60, 60, 0, 0, 0]), cap("right", teleop.HOME_DEG)), 0.0)
+
     def test_park_skipped_without_ethernet_link(self):
         args, _ = teleop.parse_args(["--backend", "real", "--dry-run"])
         self.assertTrue(args.dry_run)  # dry run never parks (park_on_exit returns before any motion)

@@ -120,6 +120,18 @@ motion even though Isaac runs below real time (≈0.5× with three cameras).
 | `quest_teleop/run_teleop_viz.sh` | RViz view of the teleop frames (arm bases, control point, hand-motion axes). |
 | `dual_arm_sim/start_right_arm_moveit.sh` | MoveIt/RViz planning for the right arm (do not run together with Quest teleop). |
 
+## Inter-arm collision guard
+
+Each arm is modelled as capsules along its links and tooling (radius 6 cm links, 4 cm flange/XEG-32/knife). A
+teleop step that would bring the two arms' surfaces closer than `--min-arm-dist` (5 cm) while reducing the
+clearance is refused (both arms hold; release and re-grip). On the real arms the two bases are placed from the
+hand-eye calibrations in `config/arm_calibration.json` (camera_link in each base_link; right base 0.448 m from the
+left one; sources in `config/calibration/`); the simulation uses the USD poses. With **one** real arm selected the
+other arm is read **read-only** over CRI (STATUS only; the link hands control back with `SetActive false`) so the
+guard also works while someone else drives it; if its state goes stale the driven arm holds. `--no-watch-other`
+turns that off (no inter-arm protection). Not modelled: stand, table, cameras; the calibrations are marked
+unverified by their authors.
+
 ## Pre-test of a physical arm in RViz (igus ROS driver)
 
 ```bash
