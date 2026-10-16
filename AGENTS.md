@@ -17,7 +17,7 @@
 - 預設實體路徑為 Ethernet CRI + Position Interface；ROS 只供本機 IK、視覺化及模擬使用，不透過 ROS topic 發送實體手臂命令。
 - 實體驗證先用 `--check-only` 或 `--dry-run`。禁止把「能連線／模擬測試通過」寫成「實體動作已驗證」。
 - 本次開發允許讀取兩臂狀態，未執行任何實體運動、馬達啟用、歸零或參考點搜尋。後續運動測試必須由現場操作者看守急停並明確啟動。
-- 不自動啟用馬達、啟動時不自動復歸、不搶其他 CRI 客戶端的控制權、不因斷線自行恢復運動。單臂故障須讓本次選用的兩臂停止串流。
+- 啟動時不自動復歸；馬達啟用只在使用者選擇 `--enable-motors`（GUI「Enable motors at start」預設勾選，2026-10-16 使用者要求）時，且只在唯一問題是 MNE 時送 Reset + Enable、不搶其他 CRI 客戶端的控制權、不因斷線自行恢復運動。單臂故障須讓本次選用的兩臂停止串流。
 - 使用者決定（2026-10-16）：正常結束（Stop all / Ctrl+C）前，實體手臂以 10°/s 自動回到全軸 0°（`--park-deg`）；再按一次即停。dry run、故障（斷線、回授逾時、急停等）或 `--no-park` 時不回位。
 - 模擬中的底座位姿與工具幾何尚非實體校正結果；點距離 guard 不等同完整碰撞檢查，不能作為人員安全保護。
 
@@ -77,3 +77,9 @@
 
 - home 姿態改為 (0, 0, 65, 0, 50, 0)°：`quest_arm_teleop.HOME_DEG`（模擬起始姿態、`--real-home`）、Ethernet 退出回位 `--park-deg` 預設值、MoveIt SRDF 的 `home` named state（另保留 `zero` = 全 0°）。SRDF 修改存於 `igus_ws/patches/Igus_rebel-home_pose.patch`，`setup/install_ros_ws.sh` 會套用所有 `Igus_rebel-*.patch`。
 - 左臂（192.168.3.11）以舊 ROS driver + RViz 實機操控已可運作（2026-10-16）：driver 啟動時那一輪 Enable 未生效，需再呼叫 `/igus_rebel/reset_and_enable` 才變 `NoError, KinOK`。右臂由其他人使用，勿連線。
+
+## RViz 實機事前測試與馬達啟用（2026-10-16，Claude）
+
+- `real_robot/rviz_pretest.sh [left|right] [--yes] [--mock]`：一條指令啟動 igus ROS driver（`config/real_arms.json` 的 IP）→ 等待控制器就緒 → 詢問後呼叫 `/igus_rebel/reset_and_enable` 並確認成功 → MoveIt + RViz（ROS_DOMAIN_ID 91、localhost only）。關閉 RViz / Ctrl+C 時整個 driver process group 一起結束。若 Quest 實機遙控或另一個 ros2_control_node 在跑則拒絕啟動。mock 模式已驗證（driver → MoveIt 就緒 → 關閉後無殘留程序）；實機僅由使用者手動用相同指令序列驗證過。
+- 使用者以 Quest 乙太網路版啟動時遇到 `_MNE`（舊 ROS driver 關閉後馬達停用）。新增 `EthernetArm.enable_motors()` / `--enable-motors`：僅在 ESTOP=3、CRI active、無程式執行、錯誤只有 MNE（關節碼 0/4、KINSTATE 0/99）時送 Reset → Enable，並等待 STATUS 變為無問題（≤ 6 s），否則拒絕。Reset 也會重置機器人的數位輸出。新增 3 項測試，共 37 項通過。
+- 手冊 Real robot 頁新增「1 · RViz pre-test」分頁（按鈕燈色、一條指令流程、不動時的排查）。

@@ -679,12 +679,48 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
   <p class="eyebrow">Wired Ethernet · both physical arms</p>
   <h1>Real robot</h1>
   <div class="tabs" role="tablist">
-    <button type="button" role="tab" data-tab="x-run" aria-selected="true">Connect both arms</button>
+    <button type="button" role="tab" data-tab="x-pre" aria-selected="true">1 · RViz pre-test</button>
+    <button type="button" role="tab" data-tab="x-run" aria-selected="false">2 · Quest teleop</button>
     <button type="button" role="tab" data-tab="x-how" aria-selected="false">How it connects</button>
     <button type="button" role="tab" data-tab="x-todo" aria-selected="false">Validation &amp; limits</button>
   </div>
-  <div data-panel="x-run">
-    <p class="note danger">Keep an operator at the hardware e-stop during physical teleop. Clear the workspace and close other robot drivers / control clients. The software never enables motors, resets errors or homes the arms at start.</p>
+  <div data-panel="x-pre">
+    <p>Before the first Quest session on an arm, drive it from <strong>RViz / MoveIt</strong> with the igus ROS driver: check that the arm follows the plan in the right direction, find safe joint ranges, and try the home pose. One arm at a time.</p>
+    <p class="note danger">One person stands at the e-stop. The Quest teleop is not running, and nobody else is driving this arm: the igus driver takes control of the arm when it connects. Leave the other arm alone if someone else uses it.</p>
+    <h3>Button ring colours</h3>
+    <div class="tbl"><table>
+      <tbody>
+        <tr><th>Blue (blinking)</th><td>Controller starting up / no communication yet. Wait.</td></tr>
+        <tr><th>Red</th><td>Communication OK, with an error. “Motor not enabled” (<code>_MNE</code>) also shows red.</td></tr>
+        <tr><th>Yellow</th><td>No error, motors off.</td></tr>
+        <tr><th>Green</th><td>Motors enabled. The arm holds its pose and can move.</td></tr>
+      </tbody>
+    </table></div>
+    <p>The soft power button on the base switches the controller on or off; it does not enable the motors.</p>
+    <h3>One command</h3>
+    <p>From the robot_remote folder, with the ring red or yellow:</p>
+    <div class="copyrow"><pre><code id="c-pre">./real_robot/rviz_pretest.sh left</code></pre><button type="button" data-copy="c-pre">Copy</button></div>
+    <ol>
+      <li>It starts the igus driver for that arm (IP from <code>config/real_arms.json</code>) and waits until it is connected.</li>
+      <li>It asks <em>Enable now? [y/N]</em>. Answer <strong>y</strong> with someone at the e-stop: it sends Reset + Enable and checks that the drives came up. The ring turns green and the arm holds.</li>
+      <li>MoveIt and RViz open. In the MotionPlanning panel set <strong>Velocity and Acceleration Scaling to 0.05</strong>.</li>
+      <li>Start from straight up with a <strong>joint</strong> move (Joints tab, one joint 5–10°): <strong>Plan</strong>, check the preview, <strong>Execute</strong>. All joints 0° is singular: do not drag the end-effector ball from there.</li>
+      <li>Goal State <strong>home</strong> = (0, 0, 65, 0, 50, 0)°, the teleop start / exit pose; <strong>zero</strong> = straight up.</li>
+      <li>Close RViz or press Ctrl+C in the terminal: MoveIt and the driver stop together. Then the Quest teleop may use the arm.</li>
+    </ol>
+    <p>Other options: <code>right</code> for the right arm, <code>--yes</code> to skip the question, <code>--mock</code> to try the RViz workflow without a robot. The driver log is saved in <code>logs/rviz_pretest_*.log</code>.</p>
+    <p>Read the current angles at any time (in another terminal):</p>
+    <div class="copyrow"><pre><code id="c-js">source /opt/ros/humble/setup.bash && ROS_DOMAIN_ID=91 ROS_LOCALHOST_ONLY=1 ros2 topic echo /joint_states --once --field position</code></pre><button type="button" data-copy="c-js">Copy</button></div>
+    <h3>If it does not move</h3>
+    <ul>
+      <li><strong>MoveIt says <code>PATH_TOLERANCE_VIOLATED</code></strong> and the arm stays still: the motors are not enabled (driver log shows <code>_MNE, MotionNotAllowed</code>). Run the script again and answer y, or call <code>ros2 service call /igus_rebel/reset_and_enable std_srvs/srv/Trigger</code> with the same ROS settings.</li>
+      <li><strong>“enabling failed”</strong>: e-stop pressed, ring still blue, or another error in the driver log.</li>
+      <li><strong>“driver not ready after 30 s”</strong>: arm off or not reachable on 192.168.3.x.</li>
+    </ul>
+  </div>
+  <div data-panel="x-run" hidden>
+    <p class="note danger">Keep an operator at the hardware e-stop during physical teleop. Clear the workspace and close other robot drivers / control clients (including the RViz pre-test). The arms never home on their own at start.</p>
+    <p class="note"><strong>Motors.</strong> With <em>Enable motors at start</em> ticked in the launcher (<code>--enable-motors</code>), an arm that only reports “motor not enabled” gets Reset + Enable during start-up and then holds its pose. Refused on e-stop, a running program or any other error. Untick it to require enabling with the robot’s own controls.</p>
     <p class="note"><strong>Return to the home pose on exit.</strong> On <strong>Stop all</strong> (or Ctrl+C) the selected arms move <em>on their own</em> back to the home pose (0, 0, 65, 0, 50, 0)° at 10°/s, all arms arriving together, then the program closes. Press Stop all / Ctrl+C <strong>again</strong> to stop them where they are. Skipped on a dry run, after a fault (lost link, stale feedback, e-stop), or with the launcher checkbox off (<code>--no-park</code>). It stops early if the two arms come within 12 cm. Other pose: <code>--park-deg J1 … J6</code>.</p>
     <ol>
       <li>Connect this PC and the controllers to the wired 192.168.3.x subnet. Left arm: <code>192.168.3.11</code>; right arm: <code>192.168.3.12</code>. This PC was observed at <code>192.168.3.54</code>.</li>

@@ -140,7 +140,8 @@ class DualArmTeleop(Node):
         self.ethernet = None
         if args.backend == "real":
             self.ethernet = EthernetArms(load_endpoints(args.config, args.left_ip, args.right_ip), args.arms,
-                                         dry_run=args.dry_run, state_timeout=args.state_timeout,
+                                         dry_run=args.dry_run, enable_motors=args.enable_motors,
+                                         state_timeout=args.state_timeout,
                                          command_timeout=args.command_timeout, max_joint_vel=args.max_joint_vel,
                                          max_track_error=np.deg2rad(args.max_track_err_deg), rate=args.rate)
         elif self.real:
@@ -206,6 +207,8 @@ class DualArmTeleop(Node):
     def wait_ready(self):
         if self.ethernet:
             self.ethernet.connect()
+            for side in self.ethernet.enabled:
+                self.get_logger().warning(f"[{side}] motors enabled (Reset + Enable)")
             self.update_ethernet()
             for side, link in self.ethernet.arms.items():
                 self.get_logger().info(f"real arm connected [{side}] {link.host}:{link.cri_port}, "
@@ -306,6 +309,9 @@ def parse_args(argv=None):
                    help=f"Ethernet: joint pose [deg] every arm returns to before the program exits (default {HOME_DEG})")
     p.add_argument("--park-vel-deg", type=float, default=10.0, help="Ethernet: speed of that return [deg/s]")
     p.add_argument("--no-park", action="store_true", help="Ethernet: do not return to --park-deg on exit")
+    p.add_argument("--enable-motors", action="store_true",
+                   help="Ethernet: if an arm only reports 'motor not enabled', send Reset + Enable at start "
+                        "(like the iRC buttons; the arm then holds its pose). Refused on e-stop or other errors.")
     p.add_argument("--arms", nargs="+", choices=SIDES, default=list(SIDES), help="which rig arms to drive")
     p.add_argument("--swap-hands", action="store_true", help="left controller drives the right arm and vice versa")
     p.add_argument("--yaw-deg", type=float, default=0.0,

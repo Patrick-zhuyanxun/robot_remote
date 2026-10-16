@@ -34,7 +34,7 @@ DEFAULTS = {
     "record": True, "name": "dual_rebel_task", "task": "pick up the box",
     "root": os.environ.get("ROBOT_REMOTE_DATASETS", str(ROOT / "datasets")), "resolution": "640x480", "fps": 30, "yaw_deg": 0,
     "left_ip": ENDPOINTS["left"]["host"], "right_ip": ENDPOINTS["right"]["host"], "real_dry_run": True,
-    "real_park": True,
+    "real_park": True, "real_enable": True,
 }
 C = {"bg": "#1f2329", "panel": "#2a2f37", "fg": "#e8e8e8", "dim": "#9aa3ad", "accent": "#4ea1ff",
      "ok": "#3fb950", "warn": "#d29922", "err": "#f85149", "rec": "#ff3b30"}
@@ -180,11 +180,14 @@ class App(tk.Tk):
         self.v_real_dry = tk.BooleanVar(value=self.cfg["real_dry_run"])
         ttk.Checkbutton(row, text="Dry run (read status + Quest IK; no motion or configuration)",
                         variable=self.v_real_dry).pack(side="left")
+        self.v_real_enable = tk.BooleanVar(value=self.cfg["real_enable"])
+        ttk.Checkbutton(row, text="Enable motors at start (Reset + Enable)",
+                        variable=self.v_real_enable).pack(side="left", padx=14)
         self.v_real_park = tk.BooleanVar(value=self.cfg["real_park"])
         ttk.Checkbutton(row, text="Return both arms to the home pose (0, 0, 65, 0, 50, 0) deg before exit (10 deg/s)",
                         variable=self.v_real_park).pack(side="left", padx=14)
         ttk.Label(self.real_box, text="Limits: 20 deg/s per joint, 0.15 m/s, 30 deg/s. CRI TCP 3920. "
-                                      "Enable motors using robot controls; starts at current pose.",
+                                      "Starts at the current pose; never homes on its own.",
                   style="Dim.TLabel").pack(anchor="w")
         self.v_target.trace_add("write", lambda *_: self._target_changed())
 
@@ -349,7 +352,7 @@ class App(tk.Tk):
                "width": int(w), "height": int(h),
                "left_ip": self.v_real_ips["left"].get().strip(),
                "right_ip": self.v_real_ips["right"].get().strip(), "real_dry_run": self.v_real_dry.get(),
-               "real_park": self.v_real_park.get()}
+               "real_park": self.v_real_park.get(), "real_enable": self.v_real_enable.get()}
         if real:
             try:
                 for side in ("left", "right"):
@@ -378,7 +381,9 @@ class App(tk.Tk):
                 f"Left {cfg['left_ip']}; right {cfg['right_ip']}.\n\n"
                 "- Someone stands at the e-stop.\n- The workspace is clear of people and objects.\n"
                 "- Other robot drivers / control clients are closed.\n"
-                "- Motors are enabled and arms are in a bent working pose using robot controls.\n"
+                + ("- Motors that report 'not enabled' are ENABLED now (Reset + Enable); the arms then hold.\n"
+                   if cfg["real_enable"] else "- Motors are already enabled (iRC / robot controls).\n")
+                + "- The arms are in a bent working pose (not straight up).\n"
                 "- Arms start at their current poses. Real grippers are not controlled.\n"
                 + ("- On Stop all the arms move ON THEIR OWN back to the home pose (0, 0, 65, 0, 50, 0) deg, 10 deg/s.\n"
                    "  Press Stop all again to stop them where they are.\n" if cfg["real_park"] else "")
@@ -469,6 +474,8 @@ class App(tk.Tk):
             cmd.append("--dry-run")
         if not cfg["real_park"]:
             cmd.append("--no-park")
+        if cfg["real_enable"] and not cfg["real_dry_run"]:
+            cmd.append("--enable-motors")
         self._set("teleop", C["warn"], "connecting to selected arms over Ethernet TCP...")
         self.procs["teleop"] = Proc("teleop", cmd, self._on_line)
         p = self.procs["teleop"]
@@ -528,7 +535,7 @@ class App(tk.Tk):
             self.events.put(("rec", "teleop", 0))
 
     def _on_line(self, name, line):
-        if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go", "RobotError", "[park]",
+        if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go", "RobotError", "[park]", "motors enabled",
                                                          "start pose", "dry run")):
             self._msg(f"[robot] {line.split(']: ')[-1]}")
         if name == "teleop":

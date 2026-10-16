@@ -11,8 +11,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "quest_teleop"))
 from ethernet_rebel import EthernetArms, Frames, RobotError, parse_status
 
 
-def status_tokens(error=0, kinstate=0, joints=(0, 0, 0, 0, 0, 0)):
-    return ("MODE joint POSJOINTCURRENT " + " ".join(map(str, joints)) + " ESTOP 3 ERROR "
+def status_tokens(error=0, kinstate=0, joints=(0, 0, 0, 0, 0, 0), estop=3):
+    return ("MODE joint POSJOINTCURRENT " + " ".join(map(str, joints)) + f" ESTOP {estop} ERROR "
             f"{'NoError' if not error else '_MNE'} " + " ".join([str(error)] * 6)
             + f" KINSTATE {kinstate} OPMODE -1").split()
 
@@ -37,6 +37,8 @@ class FakeRobot:
         self.program_state = 0
         self.reject_use = False
         self.mute_status = False
+        self.refuse_enable = False
+        self.estop_value = 3
         self.follow = False  # True: the fake arm jumps to every streamed target (ideal tracking)
         self.cri = self.pos = None
         self.closed = threading.Event()
@@ -84,7 +86,7 @@ class FakeRobot:
             while not self.closed.is_set():
                 if time.monotonic() - last > .02:
                     if not self.mute_status:
-                        self.reply("STATUS " + " ".join(status_tokens(self.error, self.kinstate, self.joints_deg)))
+                        self.reply("STATUS " + " ".join(status_tokens(self.error, self.kinstate, self.joints_deg, self.estop_value)))
                     self.reply(f"RUNSTATE MAIN main.xml main.xml 0 0 {self.program_state} 0")
                     last = time.monotonic()
                 try:
@@ -106,6 +108,10 @@ class FakeRobot:
                     elif category == "CONFIG":
                         self.enabled = body[-1] == "true"
                         self.interface()
+                    elif cmd in ("Reset", "Enable"):
+                        if cmd == "Enable" and self.error == 4 and not self.refuse_enable:
+                            self.error, self.kinstate = 0, 0  # like the real arm: joints enable, NoError, KinOK
+                        self.reply(f"CMDACK {counter}")
                     elif cmd.startswith("UsePositionInterface"):
                         if self.reject_use and body[-1] == "true":
                             self.reply(f"CMDERROR {counter} not_ready")
@@ -292,6 +298,34 @@ class DualTransportTests(unittest.TestCase):
         self.right.reject_use = True
         with self.assertRaisesRegex(RobotError, "not_ready"):
             self.pair.send({"left": [.001] * 6, "right": [.001] * 6})
+        self.assert_pair_closed()
+
+    def test_enable_motors_only_when_requested(self):
+        self.left.error, self.left.kinstate = 4, 99
+        with self.assertRaisesRegex(RobotError, "_MNE"):
+            self.connect()  # default: never enables
+        self.assertFalse(any(c[1:2] == ("Enable",) for c in self.left.commands))
+        self.left.close(); self.right.close()
+        self.left, self.right = FakeRobot(), FakeRobot()
+        self.left.error, self.left.kinstate = 4, 99
+        self.connect(enable_motors=True)
+        self.assertEqual(self.pair.enabled, ["left"])
+        cmds = [c[1] for c in self.left.commands if c[0] == "CMD"]
+        self.assertLess(cmds.index("Reset"), cmds.index("Enable"))
+        self.assertFalse(any(c[1:2] == ("Enable",) for c in self.right.commands))  # right was already fine
+
+    def test_enable_refused_on_estop_or_other_errors(self):
+        self.left.error, self.left.kinstate = 4, 99
+        self.left.estop_value = 0
+        with self.assertRaisesRegex(RobotError, "ESTOP"):
+            self.connect(enable_motors=True)
+        self.assertFalse(any(c[1:2] == ("Enable",) for c in self.left.commands))
+
+    def test_enable_that_does_not_stick_fails_cleanly(self):
+        self.left.error, self.left.kinstate = 4, 99
+        self.left.refuse_enable = True
+        with self.assertRaisesRegex(RobotError, "still not enabled"):
+            self.connect(enable_motors=True)
         self.assert_pair_closed()
 
     def test_existing_position_source_is_not_taken_over(self):

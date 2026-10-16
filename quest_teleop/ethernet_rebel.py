@@ -244,6 +244,40 @@ class EthernetArm:
             if position and (self.position is None or time.monotonic() - self.position_time > self.state_timeout):
                 raise RobotError(f"{self.side}: stale Position Interface state")
 
+    def enable_motors(self, timeout=6.0):
+        """Operator-requested: Reset + Enable (the iRC "Reset" / "Enable" buttons) when the only problem is
+        'motor not enabled'. Refuses on e-stop, a passive connection, a running program or any other error.
+        The arm holds its pose after enabling. Note: Reset also resets the robot's digital outputs."""
+        with self._lock:
+            status = self.status
+        if status is None:
+            raise RobotError(f"{self.side}: no CRI status yet")
+        if status.problem() is None:
+            return False
+        if status.estop != 3:
+            raise RobotError(f"{self.side}: ESTOP={status.estop}; release the e-stop first")
+        if self.active is not True:
+            raise RobotError(f"{self.side}: CRI is passive; close the other driver / control client first")
+        if self.program_state != 0:
+            raise RobotError(f"{self.side}: a robot program is running; stop it first")
+        not_enabled_only = all(e in (0, 4) for e in status.joint_errors) and status.kinstate in (0, 99) \
+            and status.error.lower().strip("_") in ("mne", "noerror", "no_error")
+        if not not_enabled_only:
+            raise RobotError(f"{self.side}: {status.problem()} is more than 'motor not enabled'; "
+                             "check the robot before enabling")
+        self.command("Reset")
+        self.command("Enable")
+        end = time.monotonic() + timeout
+        while time.monotonic() < end:
+            with self._lock:
+                if self.status is not None and self.status.received > status.received and self.status.problem() is None:
+                    return True
+            if self.fault:
+                raise RobotError(f"{self.side}: {self.fault}")
+            time.sleep(.05)
+        with self._lock:
+            raise RobotError(f"{self.side}: motors still not enabled after Reset + Enable ({self.status.problem()})")
+
     def prepare(self):
         self.require_ready()
         port, running, in_use = self.interface
@@ -360,9 +394,11 @@ class EthernetArm:
 
 class EthernetArms:
     """All selected arms must pass preflight; any transport fault closes the pair."""
-    def __init__(self, endpoints, sides=("left", "right"), dry_run=False, **limits):
+    def __init__(self, endpoints, sides=("left", "right"), dry_run=False, enable_motors=False, **limits):
         self.arms = {s: EthernetArm(s, **endpoints[s], **limits) for s in sides}
         self.dry_run = dry_run
+        self.enable_motors = enable_motors
+        self.enabled = []  # sides whose motors this session enabled
         self.fault = None
         self._closed = threading.Event()
         self._monitor = None
@@ -372,6 +408,10 @@ class EthernetArms:
             for arm in self.arms.values():
                 arm.connect()
             if not self.dry_run:
+                if self.enable_motors:
+                    for side, arm in self.arms.items():
+                        if arm.enable_motors():
+                            self.enabled.append(side)
                 # Check both BEFORE configuring either Position Interface.
                 for arm in self.arms.values():
                     arm.require_ready()

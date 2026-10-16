@@ -120,6 +120,17 @@ motion even though Isaac runs below real time (≈0.5× with three cameras).
 | `quest_teleop/run_teleop_viz.sh` | RViz view of the teleop frames (arm bases, control point, hand-motion axes). |
 | `dual_arm_sim/start_right_arm_moveit.sh` | MoveIt/RViz planning for the right arm (do not run together with Quest teleop). |
 
+## Pre-test of a physical arm in RViz (igus ROS driver)
+
+```bash
+./real_robot/rviz_pretest.sh left     # or right; --yes skips the enable question; --mock without a robot
+```
+
+Starts the igus driver for that arm (`config/real_arms.json`), asks before Reset + Enable, then opens
+MoveIt + RViz (ROS_DOMAIN_ID 91, localhost only). Use Velocity/Acceleration Scaling 0.05; start from straight up
+with a joint move. Goal states `home` = (0, 0, 65, 0, 50, 0)° and `zero`. Closing RViz / Ctrl+C stops everything.
+Do not run it together with the Quest teleop: one CRI client controls an arm.
+
 ## Physical dual arms over Ethernet (teleop only)
 
 | Arm | Controller | Address | Communication |
@@ -151,8 +162,10 @@ selected with `--arms left` or `--arms right`. CLI endpoints come from `config/r
 `--config <file>`, `--left-ip <ip>` or `--right-ip <ip>`. The GUI remembers explicit IP overrides locally.
 
 Both selected robots must have healthy feedback, enabled motors, an active CRI connection and a stopped
-robot program before either Position Interface is configured. The client does not reset errors, enable
-motors, home, reference joints or take control away from another client. Close other control clients after
+robot program before either Position Interface is configured. With `--enable-motors` (launcher: *Enable motors
+at start*, default on) an arm whose only problem is 'motor not enabled' gets Reset + Enable first; e-stop, a running
+program or any other error is refused. The client never homes, references joints or takes control away from
+another client. Close other control clients after
 preparing the arms. `--real-home` is rejected on Ethernet. Start from the measured physical pose and hold
 each controller's **GRIP** to move its arm; release to deselect that position source. Tracking loss requires
 release and re-grip. Default limits: 0.35 rad/s per joint, 0.15 m/s TCP translation, 30°/s TCP rotation at 30 Hz.
