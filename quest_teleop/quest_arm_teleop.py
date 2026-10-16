@@ -39,7 +39,7 @@ ARM_JOINTS = [f"joint{i}" for i in range(1, 7)]
 # Natural working pose: tool tip ~0.42 m in front of / 0.21 m above base_link, gripper pitched 30 deg
 # forward from straight down (like a hand reaching for a table), 0.44 m from the shoulder (~0.2 m reach
 # margin). joint5 = 50 deg leaves ~44 deg of wrist pitch either way before its +-94 deg limit.
-HOME_DEG = [0.0, 0.0, 100.0, 0.0, 50.0, 0.0]
+HOME_DEG = [0.0, 0.0, 65.0, 0.0, 50.0, 0.0]
 
 # XEG-32 jaw centre in link6, measured from the Isaac USD (dual_arm_rig_v2, q = 0): midpoint of the two
 # carriage joint origins (-30.2, -8.1) mm, 6 mm inside the fingertips (tips at z = 101 mm).

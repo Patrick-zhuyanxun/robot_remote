@@ -181,7 +181,7 @@ class App(tk.Tk):
         ttk.Checkbutton(row, text="Dry run (read status + Quest IK; no motion or configuration)",
                         variable=self.v_real_dry).pack(side="left")
         self.v_real_park = tk.BooleanVar(value=self.cfg["real_park"])
-        ttk.Checkbutton(row, text="Return both arms to all-joints 0 deg before exit (10 deg/s)",
+        ttk.Checkbutton(row, text="Return both arms to the home pose (0, 0, 65, 0, 50, 0) deg before exit (10 deg/s)",
                         variable=self.v_real_park).pack(side="left", padx=14)
         ttk.Label(self.real_box, text="Limits: 20 deg/s per joint, 0.15 m/s, 30 deg/s. CRI TCP 3920. "
                                       "Enable motors using robot controls; starts at current pose.",
@@ -380,7 +380,7 @@ class App(tk.Tk):
                 "- Other robot drivers / control clients are closed.\n"
                 "- Motors are enabled and arms are in a bent working pose using robot controls.\n"
                 "- Arms start at their current poses. Real grippers are not controlled.\n"
-                + ("- On Stop all the arms move ON THEIR OWN back to all joints 0 deg (10 deg/s).\n"
+                + ("- On Stop all the arms move ON THEIR OWN back to the home pose (0, 0, 65, 0, 50, 0) deg, 10 deg/s.\n"
                    "  Press Stop all again to stop them where they are.\n" if cfg["real_park"] else "")
                 + 
                 "\nEach arm only moves while you hold its GRIP. Continue?", icon="warning"):
@@ -607,10 +607,10 @@ class App(tk.Tk):
         if self.stage == "stopping":
             if parking and "teleop" in self.procs:  # second press: stop the arms where they are
                 self.procs["teleop"].interrupt()
-                self.rec_label.configure(text="Return to 0 deg interrupted - arms stopped", bg=C["err"])
+                self.rec_label.configure(text="Return to the home pose interrupted - arms stopped", bg=C["err"])
             return
         self.stage = "stopping"
-        self.rec_label.configure(text="Returning both arms to 0 deg ...  press Stop all again to stop them now" if parking
+        self.rec_label.configure(text="Returning both arms to the home pose ...  press Stop all again to stop them now" if parking
                                  else "Stopping... (saving any open episode, closing processes)", bg=C["warn"])
 
         def _stop():
@@ -635,7 +635,7 @@ class App(tk.Tk):
 
     def on_close(self):
         if self.stage == "stopping":  # closing the window now would be a second Stop all
-            if messagebox.askyesno("Stop the arms?", "The arms are still returning to 0 deg.\n"
+            if messagebox.askyesno("Stop the arms?", "The arms are still returning to the home pose.\n"
                                    "Stop them where they are and close?", icon="warning"):
                 self.stop_all()
             return

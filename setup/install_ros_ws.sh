@@ -13,25 +13,27 @@ IGUS_REBEL_COMMIT=cc0e2b61eaa34f35d75e1ff9aeb2d2bf3081c6b5
 IRC_URL=https://github.com/CommonplaceRobotics/iRC_ROS.git
 IRC_COMMIT=41701e6df3398087d217f0f478622e60f694de41
 
-clone_patch() {  # url branch commit dir patch
-  local dir="$WS/src/$4"
+clone_patch() {  # url branch commit dir patch-glob
+  local dir="$WS/src/$4" p
   if [ ! -d "$dir/.git" ]; then
     git clone -b "$2" "$1" "$dir"
     git -C "$dir" checkout -q "$3"
   fi
-  if git -C "$dir" apply --check "$WS/patches/$5" 2>/dev/null; then
-    git -C "$dir" apply "$WS/patches/$5" && echo "[ws] applied $5"
-  else
-    echo "[ws] $5 already applied (or does not apply) - skipped"
-  fi
+  for p in "$WS"/patches/$5; do
+    if git -C "$dir" apply --check "$p" 2>/dev/null; then
+      git -C "$dir" apply "$p" && echo "[ws] applied $(basename "$p")"
+    else
+      echo "[ws] $(basename "$p") already applied (or does not apply) - skipped"
+    fi
+  done
 }
 
 mkdir -p "$WS/src"
 source /opt/ros/humble/setup.bash
-clone_patch "$IGUS_REBEL_URL" "$IGUS_REBEL_BRANCH" "$IGUS_REBEL_COMMIT" Igus_rebel Igus_rebel-open_loop_control.patch
+clone_patch "$IGUS_REBEL_URL" "$IGUS_REBEL_BRANCH" "$IGUS_REBEL_COMMIT" Igus_rebel "Igus_rebel-*.patch"
 PKGS=(igus_rebel igus_rebel_moveit_config)
 if [ "${1:-}" = "--with-irc" ]; then
-  clone_patch "$IRC_URL" humble "$IRC_COMMIT" iRC_ROS iRC_ROS-rviz_params.patch
+  clone_patch "$IRC_URL" humble "$IRC_COMMIT" iRC_ROS "iRC_ROS-*.patch"
   PKGS+=(irc_ros_description irc_ros_bringup irc_ros_moveit_config)
 fi
 

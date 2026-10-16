@@ -138,7 +138,7 @@ class NodeIntegrationTests(unittest.TestCase):
 
     def test_clean_exit_returns_both_arms_to_zero(self):
         left, right = FakeRobot(), FakeRobot()
-        left.joints_deg = list(teleop.HOME_DEG)
+        left.joints_deg = [0.0] * 6
         right.joints_deg = [10, 20, 80, 0, 40, -10]
         for robot in (left, right):
             robot.follow = True
@@ -146,7 +146,7 @@ class NodeIntegrationTests(unittest.TestCase):
         rclpy.init()
         try:
             args, _ = teleop.parse_args(["--backend", "real", "--quiet", "--park-vel-deg", "30"])
-            self.assertEqual(args.park_deg, [0.0] * 6)
+            self.assertEqual(args.park_deg, list(teleop.HOME_DEG))  # default park pose = home (0, 0, 65, 0, 50, 0)
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])
             with patch.object(teleop, "load_endpoints", return_value={"left": left.endpoint, "right": right.endpoint}):
@@ -172,7 +172,7 @@ class NodeIntegrationTests(unittest.TestCase):
             with patch.object(teleop, "QuestController", return_value=IdleQuest()):
                 teleop.run_session(node, chain, args)
             for robot in (left, right):
-                np.testing.assert_allclose(robot.joints_deg, np.zeros(6), atol=1e-6)
+                np.testing.assert_allclose(robot.joints_deg, teleop.HOME_DEG, atol=1e-6)
                 self.assertFalse(robot.in_use)
             self.assertTrue(all(a.position is None for a in node.ethernet.arms.values()))
         finally:
@@ -222,7 +222,7 @@ class NodeIntegrationTests(unittest.TestCase):
                 teleop.run_session(node, chain, args)
             self.assertTrue(quest.closed)
             for robot in (left, right):
-                np.testing.assert_allclose(robot.joints_deg, np.zeros(6), atol=1e-6)
+                np.testing.assert_allclose(robot.joints_deg, teleop.HOME_DEG, atol=1e-6)
         finally:
             signal.signal(signal.SIGINT, signal.default_int_handler)
             signal.signal(signal.SIGTERM, signal.SIG_DFL)

@@ -302,8 +302,8 @@ def parse_args(argv=None):
     p.add_argument("--dry-run", action="store_true", help="real: observe + Quest IK, no configuration or motion")
     p.add_argument("--real-home", action="store_true",
                    help="real arm: first move slowly (8.6 deg/s) to the teleop start pose HOME_DEG; off = start where it is")
-    p.add_argument("--park-deg", type=float, nargs=6, default=[0.0] * 6, metavar="J",
-                   help="Ethernet: joint pose [deg] every arm returns to before the program exits (default all 0)")
+    p.add_argument("--park-deg", type=float, nargs=6, default=list(HOME_DEG), metavar="J",
+                   help=f"Ethernet: joint pose [deg] every arm returns to before the program exits (default {HOME_DEG})")
     p.add_argument("--park-vel-deg", type=float, default=10.0, help="Ethernet: speed of that return [deg/s]")
     p.add_argument("--no-park", action="store_true", help="Ethernet: do not return to --park-deg on exit")
     p.add_argument("--arms", nargs="+", choices=SIDES, default=list(SIDES), help="which rig arms to drive")
@@ -387,7 +387,7 @@ def main():
 
 
 def park_on_exit(node, args, log):
-    """Before a clean exit, bring the real arms slowly back to --park-deg (default: all joints 0).
+    """Before a clean exit, bring the real arms slowly back to --park-deg (default: HOME_DEG).
     Skipped on a dry run, with --no-park, or after a fault (stale feedback, e-stop, lost link): the arms
     then stay where they stopped. A second Ctrl+C / Stop all during the return stops the arms at once."""
     if node.ethernet is None or args.dry_run or args.no_park:

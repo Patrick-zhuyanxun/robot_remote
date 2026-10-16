@@ -156,7 +156,7 @@ sim.play()
 if not args.zero_pose:
     # Start both arms in the natural working pose instead of straight up (q = 0, a singular pose).
     # Keep in sync with quest_teleop/quest_arm_teleop.py HOME_DEG.
-    home_deg = [0.0, 0.0, 100.0, 0.0, 50.0, 0.0]
+    home_deg = [0.0, 0.0, 65.0, 0.0, 50.0, 0.0]
     names = robot.dof_names
     idx = np.array([names.index(f"arm_{s}_joint{i + 1}") for s in ("left", "right") for i in range(6)])
     q_home = np.deg2rad(home_deg * 2)

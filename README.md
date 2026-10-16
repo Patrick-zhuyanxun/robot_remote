@@ -157,10 +157,10 @@ preparing the arms. `--real-home` is rejected on Ethernet. Start from the measur
 each controller's **GRIP** to move its arm; release to deselect that position source. Tracking loss requires
 release and re-grip. Default limits: 0.35 rad/s per joint, 0.15 m/s TCP translation, 30°/s TCP rotation at 30 Hz.
 
-**Return to 0° on exit:** on Stop all / Ctrl+C the selected arms move on their own back to all joints 0° (`--park-deg`)
+**Return to the home pose on exit:** on Stop all / Ctrl+C the selected arms move on their own back to the home pose (0, 0, 65, 0, 50, 0)° (`--park-deg`)
 at 10°/s (`--park-vel-deg`), arriving together, then the program closes. A second Stop all / Ctrl+C stops them where
 they are. Skipped on a dry run, after a fault, or with `--no-park` (launcher checkbox). Stops early if the arms come
-within `--min-arm-dist`. Keep the path to the vertical pose clear.
+within `--min-arm-dist`. Keep the path to the home pose clear.
 
 The transport sends six joint angles in degrees, converted from the IK's radians. It leaves external axes,
 tool axes and digital outputs alone. Live sessions temporarily enable the Position Interface if needed
