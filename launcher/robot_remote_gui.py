@@ -35,7 +35,9 @@ DEFAULTS = {
     "root": os.environ.get("ROBOT_REMOTE_DATASETS", str(ROOT / "datasets")), "resolution": "640x480", "fps": 30, "yaw_deg": 0,
     "left_ip": ENDPOINTS["left"]["host"], "right_ip": ENDPOINTS["right"]["host"], "real_dry_run": True,
     "real_park": True, "real_enable": True, "real_rviz": True, "real_start_home": True,
+    "rot_frame": "tool",  # Quest hand rotation applied about the tool's own axes, or about the fixed base axes
 }
+FRAME_TEXT = {"tool": "Rotation: TOOL frame  (click: base)", "base": "Rotation: BASE frame  (click: tool)"}
 C = {"bg": "#1f2329", "panel": "#2a2f37", "fg": "#e8e8e8", "dim": "#9aa3ad", "accent": "#4ea1ff",
      "ok": "#3fb950", "warn": "#d29922", "err": "#f85149", "rec": "#ff3b30"}
 
@@ -358,7 +360,8 @@ class App(tk.Tk):
                "left_ip": self.v_real_ips["left"].get().strip(),
                "right_ip": self.v_real_ips["right"].get().strip(), "real_dry_run": self.v_real_dry.get(),
                "real_park": self.v_real_park.get(), "real_enable": self.v_real_enable.get(),
-               "real_rviz": self.v_real_rviz.get(), "real_start_home": self.v_real_start_home.get()}
+               "real_rviz": self.v_real_rviz.get(), "real_start_home": self.v_real_start_home.get(),
+               "rot_frame": self.cfg.get("rot_frame", "tool")}  # set on the run page (button), kept for next time
         if real:
             try:
                 for side in ("left", "right"):
@@ -439,6 +442,9 @@ class App(tk.Tk):
         if cfg["record"]:
             self.b_toggle.pack(side="left", padx=(0, 8))
             self.b_discard.pack(side="left", padx=(0, 8))
+        # live switch of the rotation frame; enabled once the teleop reports its frame (it applies at the next grip)
+        self.b_frame = ttk.Button(btns, text=FRAME_TEXT[cfg["rot_frame"]], command=self._toggle_frame, state="disabled")
+        self.b_frame.pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="■ Stop all", command=self.stop_all).pack(side="right")
         ttk.Button(btns, text="? Manual", command=open_manual).pack(side="right")
         ttk.Button(btns, text="Open log folder", command=lambda: subprocess.Popen(["xdg-open", str(LOG_DIR)])).pack(side="right", padx=8)
@@ -494,7 +500,7 @@ class App(tk.Tk):
         self._set("sim", C["ok"], "driver up" + (", motors enabled" if enable else ""))
         # 2) the Quest teleop, streaming to the drivers' trajectory controllers (--backend real-ros)
         cmd = [str(ROOT / "quest_teleop" / "run_quest_real_arm.sh"), "--arms", *cfg["arms"],
-               "--yaw-deg", str(cfg["yaw_deg"]), "--quiet"]
+               "--yaw-deg", str(cfg["yaw_deg"]), "--rot-frame", cfg["rot_frame"], "--quiet"]
         if cfg["yaw_deg"] == 180:
             cmd.append("--swap-hands")
         if cfg["real_dry_run"]:
@@ -504,7 +510,7 @@ class App(tk.Tk):
         if not cfg["real_start_home"]:
             cmd.append("--no-start-home")
         self._set("teleop", C["warn"], "connecting to the drivers, then moving to home...")
-        self.procs["teleop"] = Proc("teleop", cmd, self._on_line)
+        self.procs["teleop"] = Proc("teleop", cmd, self._on_line, stdin=True)
         p = self.procs["teleop"]
         if not self._wait_for(p, r"real arm connected", 60):
             p.interrupt()
@@ -540,11 +546,11 @@ class App(tk.Tk):
         self._set("sim", C["ok"], "running")
 
         tele_cmd = [str(ROOT / "quest_teleop" / "run_quest_dual_arm.sh"), "--arms", *cfg["arms"],
-                    "--yaw-deg", str(cfg["yaw_deg"]), "--quiet"]
+                    "--yaw-deg", str(cfg["yaw_deg"]), "--rot-frame", cfg["rot_frame"], "--quiet"]
         if cfg["yaw_deg"] == 180:
             tele_cmd.append("--swap-hands")
         self._set("teleop", C["warn"], "starting (arms go home, CloudXR ~10 s)...")
-        self.procs["teleop"] = Proc("teleop", tele_cmd, self._on_line)
+        self.procs["teleop"] = Proc("teleop", tele_cmd, self._on_line, stdin=True)
         if not self._wait_for(self.procs["teleop"], r"CloudXR up", 120):
             self._set("teleop", C["err"], f"failed to start - see log: {self.procs['teleop'].log_path}")
             return
@@ -572,6 +578,9 @@ class App(tk.Tk):
         if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go", "RobotError", "[park]", "[home]", "motors enabled", "watching the", "assumed to stay", "apart (surface", "guard blind",
                                                          "start pose", "dry run")):
             self._msg(f"[robot] {line.split(']: ')[-1]}")
+        if name == "teleop" and (m := re.search(r"rotation frame: (tool|base)\b", line)):
+            self.events.put(("frame", m.group(1)))
+            self._msg(f"[teleop] {line.split(']: ')[-1]}")
         if name == "teleop":
             if "TRACKED" in line and "LOST" not in line:
                 self._set("teleop", C["ok"], "Quest connected, controllers tracked")
@@ -596,6 +605,23 @@ class App(tk.Tk):
         elif name == "sim" and ("Traceback" in line or "Error" in line and "[Error]" not in line):
             self._msg(f"[sim] {line}")
 
+    def _toggle_frame(self):
+        """Ask the running teleop to switch the rotation frame; the label follows its confirmation line."""
+        new = "base" if self.cfg["rot_frame"] == "tool" else "tool"
+        p = self.procs.get("teleop")
+        if p is None or not p.alive():
+            return
+        try:
+            p.send(f"rot_frame {new}")
+        except OSError:  # the teleop just exited
+            return
+        self.b_frame.configure(state="disabled")  # until the teleop confirms
+        try:  # remember it for the next start
+            saved = json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
+            CONFIG.write_text(json.dumps({**saved, "rot_frame": new}, ensure_ascii=False, indent=1))
+        except (OSError, ValueError):
+            pass
+
     def _rec_cmd(self, c):
         if "record" in self.procs:
             self.procs["record"].send(c)
@@ -613,6 +639,9 @@ class App(tk.Tk):
                 self.log.see("end")
             elif ev[0] == "rec":
                 self._rec_state(ev[1], ev[2])
+            elif ev[0] == "frame":
+                self.cfg["rot_frame"] = ev[1]
+                self.b_frame.configure(text=FRAME_TEXT[ev[1]], state="normal")
         for key, p in list(self.procs.items()):
             if key in self.status and not p.alive() and self.stage != "stopping" and getattr(p, "_reported", False) is False:
                 p._reported = True

@@ -449,12 +449,13 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
     <div class="ctl">
       <button type="button" data-k="grip" aria-pressed="false"><span class="sw" style="background:var(--ok)"></span><strong>Grip (hold)</strong><span>The arm follows your hand while held. Release to freeze it. Re-grip anywhere: the arm does not jump.</span></button>
       <button type="button" data-k="move" aria-pressed="false"><span class="sw"></span><strong>Move the hand</strong><span>The flange moves along the arm-base axes: forward, left, up.</span></button>
-      <button type="button" data-k="twist" aria-pressed="false"><span class="sw"></span><strong>Twist the handle</strong><span>The tool spins about its own Z (flange) axis. Nod or tilt the controller to tilt the tool about its own X / Y axes.</span></button>
+      <button type="button" data-k="twist" aria-pressed="false"><span class="sw"></span><strong>Twist the handle</strong><span>Tool frame (default): the tool spins about its own Z (flange) axis; nod or tilt the controller to tilt the tool about its own X / Y axes. Base frame: the hand's rotation is applied about the fixed arm-base axes. Switch with the <em>Rotation: … frame</em> button on the launcher's run page.</span></button>
       <button type="button" data-k="trig" aria-pressed="false"><span class="sw" style="background:var(--warn)"></span><strong>Trigger</strong><span>The gripper closes in proportion to the pull.</span></button>
       <button type="button" data-k="ax" aria-pressed="false"><span class="sw" style="background:var(--quest)"></span><strong>A or X</strong><span>Start recording an episode; press again to save it.</span></button>
       <button type="button" data-k="by" aria-pressed="false"><span class="sw" style="background:var(--violet)"></span><strong>B or Y</strong><span>Discard the current episode.</span></button>
     </div>
   </div>
+  <p class="note"><strong>Rotation frame.</strong> The run page's <em>Rotation: TOOL frame / BASE frame</em> button switches how a hand rotation is applied while the teleop runs (sim and real arms). Translation always follows the arm-base axes. An arm you are holding keeps its frame until you <strong>release and grip again</strong>, so the tool never swings mid-grip. The choice is remembered for the next start; CLI <code>--rot-frame tool|base</code>, or <code>ros2 topic pub --once /quest_teleop/set_rot_frame std_msgs/msg/String "data: base"</code>.</p>
   <p class="note">Speeds are capped: 0.5 m/s, 90°/s rotation, 45°/s per joint (the ReBeL limit). Fast hand motions are followed smoothly with a short lag. Wrist pitch reaches about ±40° from the home pose before joint 5 hits its limit. Both arms freeze with a warning if they come within 12 cm of each other.</p>
 </section>
 
@@ -728,7 +729,7 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
     <ol>
       <li>Wire this PC and both controllers to the 192.168.3.x subnet (left <code>192.168.3.11</code>, right <code>192.168.3.12</code>). Close the RViz pre-test and any other driver of these arms.</li>
       <li>Launcher → <strong>Real igus ReBeL arms</strong>, tick the arms in “Arms to control”, press Start. It starts the igus driver of each arm (motors enabled), then the teleop: the arms move to home, then wait for the Quest.</li>
-      <li>Connect the Quest. Each arm moves while its controller’s <strong>GRIP</strong> is held.</li>
+      <li>Connect the Quest. Each arm moves while its controller’s <strong>GRIP</strong> is held. The <em>Rotation: … frame</em> button switches tool / base frame rotation (applies at the next grip).</li>
       <li><strong>Stop all</strong>: the arms return to 0°, then teleop, RViz and drivers close.</li>
     </ol>
     <p>Without the launcher, two terminals in the robot_remote folder:</p>

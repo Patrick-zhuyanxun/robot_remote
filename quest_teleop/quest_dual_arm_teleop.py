@@ -24,6 +24,8 @@ import json
 import os
 import signal
 import subprocess
+import sys
+import threading
 import time
 from pathlib import Path
 
@@ -110,6 +112,7 @@ class Arm:
         self.d_local = Rotation.identity()
         self.origin_q = Rotation.identity()
         self.m_tool_ctrl = Rotation.identity()
+        self.rot_frame = args.rot_frame  # latched at engage from DualArmTeleop.rot_frame
         self.raw_quat = np.array([0.0, 0.0, 0.0, 1.0])
 
     def capsules(self, q):
@@ -161,10 +164,37 @@ class DualArmTeleop(Node):
         self.viz_js_pub = self.create_publisher(JointState, "/quest_teleop/joint_states", 10)
         self.hand_pub = {s: self.create_publisher(PoseStamped, f"/quest_teleop/{s}/hand", 10) for s in args.arms}
         self.state_pub = self.create_publisher(String, "/quest_teleop/state", 10)
+        # rotation frame (tool / base), switchable while running: GUI button (stdin line "rot_frame tool|base")
+        # or `ros2 topic pub --once /quest_teleop/set_rot_frame std_msgs/String "data: base"`
+        self.rot_frame = args.rot_frame
+        self.create_subscription(String, "/quest_teleop/set_rot_frame", lambda m: self.set_rot_frame(m.data), 10)
         self.all_q = {s: None for s in SIDES}       # measured arm joints of BOTH arms (driven or not)
         self.all_grip = {s: 0.0 for s in SIDES}     # measured gripper closedness [0, 1]
         if not self.real:
             self.create_subscription(JointState, "/dual_arm/isaac_joint_states", self._on_js, 10)
+
+    def set_rot_frame(self, mode):
+        """Switch the rotation frame. An arm that is engaged keeps its frame until it is released and gripped
+        again: the two mappings give different targets for the same hand pose, so switching mid-grip would
+        swing the tool."""
+        mode = str(mode).strip().lower()
+        if mode not in ("tool", "base"):
+            self.get_logger().warning(f"rotation frame: unknown mode {mode!r} (tool or base)")
+            return
+        self.rot_frame = mode
+        held = [s for s, a in self.arms.items() if a.engaged and a.rot_frame != mode]
+        self.get_logger().info(f"rotation frame: {mode}" + (
+            f" (the {' + '.join(held)} arm keeps {self.arms[held[0]].rot_frame} until you release and grip again)"
+            if held else ""))
+
+    def read_commands(self, stream):
+        """Command lines from the launcher (stdin pipe): `rot_frame tool|base`. Ends at EOF."""
+        for line in iter(stream.readline, ""):
+            words = line.split()
+            if len(words) == 2 and words[0] == "rot_frame":
+                self.set_rot_frame(words[1])
+            elif words:
+                self.get_logger().warning(f"unknown command {line.strip()!r} (expected: rot_frame tool|base)")
 
     def _on_real_js(self, side, msg):
         d = dict(zip(msg.name, msg.position))
@@ -424,7 +454,7 @@ def parse_args(argv=None):
     p.add_argument("--max-lin-vel", type=float, default=None, help="TCP speed limit [m/s] (default 0.5 sim, 0.15 real)")
     p.add_argument("--max-rot-vel", type=float, default=None,
                    help="TCP rotation speed limit [deg/s] (default 90 sim, 30 real)")
-    p.add_argument("--rot-frame", choices=["tool", "base"], default="tool",
+    p.add_argument("--rot-frame", choices=["tool", "base"], default="tool",  # also switchable while running
                    help="tool: twisting the controller spins the tool about its own Z, nodding tilts it "
                         "(controller-local rotation applied in the tool frame); base: hand rotation applied "
                         "about the fixed base axes")
@@ -485,6 +515,8 @@ def main():
     chain = SerialChain(make_urdf(), "base_link", "link6", ARM_JOINTS, tcp_xyz=tcp)
     node = DualArmTeleop(args, chain)
     log = node.get_logger()
+    if sys.stdin is not None and not sys.stdin.isatty():  # launched by the GUI: it writes commands to our stdin
+        threading.Thread(target=node.read_commands, args=(sys.stdin,), daemon=True).start()
     log.info(f"control point ({'custom' if args.tcp else args.tcp_preset}) in link6 = {np.round(tcp, 4).tolist()} m")
     if node.real:
         log.warning(f"REAL ARMS ({', '.join(args.arms)}){' DRY RUN - observation only' if args.dry_run else ''}: "
@@ -593,8 +625,8 @@ def run_session(node, chain, args):
 
     r_base_op = Rotation.from_euler("z", args.yaw_deg, degrees=True)
     right_base = r_base_op.apply([0.0, -1.0, 0.0])  # operator 'right' in the arm base frame
-    log.info(f"rotation frame: {args.rot_frame}" + (
-        f" (controller twist axis {np.round(args.ctrl_twist_axis, 2).tolist()} -> tool Z)" if args.rot_frame == "tool" else ""))
+    log.info(f"rotation frame: {node.rot_frame}" + (
+        f" (controller twist axis {np.round(args.ctrl_twist_axis, 2).tolist()} -> tool Z)" if node.rot_frame == "tool" else ""))
     dt = 1.0 / args.rate
     # Ethernet: stay 10 % under the transport's per-tick limit, so encoder noise between the engage snapshot and
     # the first streamed target can never trip it (that check would stop both arms).
@@ -654,6 +686,7 @@ def run_session(node, chain, args):
                     arm.home_p, arm.home_r = t_now[:3, 3].copy(), Rotation.from_matrix(t_now[:3, :3])
                     arm.origin_p, arm.origin_r = p_b.copy(), r_b
                     arm.origin_q = Rotation.from_quat(quat)  # controller orientation at engage (operator frame)
+                    arm.rot_frame = node.rot_frame
                     arm.m_tool_ctrl = tool_from_controller(arm.home_r, args.ctrl_twist_axis,
                                                            arm.origin_q.inv().apply([0.0, -1.0, 0.0]), right_base)
                     arm.q_cmd = arm.q_meas.copy()
@@ -661,7 +694,7 @@ def run_session(node, chain, args):
                     # never clamp tighter than where the arm already is, or engaging would jump it inward
                     arm.reach = max(args.max_reach, float(np.linalg.norm(arm.home_p - arm.shoulder)))
                     arm.engaged = True
-                    log.info(f"[{side}] engaged")
+                    log.info(f"[{side}] engaged ({arm.rot_frame}-frame rotation)")
                 elif squeeze < off_th and arm.engaged:
                     arm.engaged = False
                     log.info(f"[{side}] released")
@@ -672,7 +705,7 @@ def run_session(node, chain, args):
                         p_des = arm.shoulder + d * (arm.reach / np.linalg.norm(d))
                     arm.r_delta = r_b * arm.origin_r.inv()  # hand rotation since engage, in arm base axes
                     arm.raw_quat = quat
-                    if args.rot_frame == "tool":
+                    if arm.rot_frame == "tool":
                         # rotation of the controller about its OWN axes since engage, re-expressed on the
                         # tool's own axes and applied on the tool side (right-multiplied)
                         arm.d_local = arm.origin_q.inv() * Rotation.from_quat(quat)
@@ -793,7 +826,7 @@ def run_session(node, chain, args):
                             a = np.rad2deg(np.linalg.norm(v))
                             return f"{a:5.1f}deg about {np.round(v / np.linalg.norm(v), 2) if a > 0.5 else '[  -  ]'}"
                         r_meas = Rotation.from_matrix(chain.fk(arm.q_meas)[:3, :3])
-                        if args.rot_frame == "tool":
+                        if arm.rot_frame == "tool":
                             hand_t = arm.m_tool_ctrl * arm.d_local * arm.m_tool_ctrl.inv()
                             log.info(f"[{side}] ROT(tool frame) hand {rv(hand_t)} | cmd {rv(arm.home_r.inv() * arm.cmd_r)}"
                                      f" | actual {rv(arm.home_r.inv() * r_meas)}   [axis z = spin about flange axis]")

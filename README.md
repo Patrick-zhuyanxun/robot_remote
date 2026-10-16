@@ -50,6 +50,9 @@ mkdir -p ~/isaac-sim-6.1 && unzip -q ~/Downloads/isaac-sim-6.1.0.zip -d ~/isaac-
    enter the **Server IP** shown in the GUI → tap the *accept cert* link and accept → back → **Connect**.
 3. Hold **Grip** to move an arm, **Trigger** closes its gripper, **A/X** starts / saves an episode,
    **B/Y** discards it. **Stop all** in the GUI saves any open episode and shuts everything down.
+   The run page's **Rotation: TOOL / BASE frame** button switches how hand rotation is applied
+   (tool = about the tool's own axes, base = about the fixed arm-base axes; translation always follows the base axes).
+   It takes effect when an arm is next gripped (`--rot-frame`, or topic `/quest_teleop/set_rot_frame` "tool"/"base").
 
 New datasets go to `robot_remote/datasets/` by default (the GUI and `ROBOT_REMOTE_DATASETS` can override this).
 Settings live in `config/launcher.json`, physical endpoints in `config/real_arms.json`, and logs in `logs/`.

@@ -1,4 +1,5 @@
 """Run with the sourced Quest / ROS environment for ROS-node integration coverage."""
+import io
 from pathlib import Path
 import sys
 import unittest
@@ -393,6 +394,57 @@ class NodeIntegrationTests(unittest.TestCase):
             rclpy.try_shutdown()
             left.close()
             right.close()
+
+    def test_rotation_frame_switch_applies_at_the_next_grip(self):
+        left = FakeRobot()
+        left.joints_deg = list(teleop.HOME_DEG)
+        node = None
+        rclpy.init()
+        try:
+            args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--arms", "left", "--quiet",
+                                         "--no-park", "--no-start-home"])
+            self.assertEqual(args.rot_frame, "tool")
+            chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
+                                       tcp_xyz=teleop.TCP_PRESETS["flange"])
+            with patch.object(teleop, "load_endpoints", return_value={"left": left.endpoint}):
+                node = teleop.DualArmTeleop(args, chain)
+            frames = []
+
+            class SwitchQuest:  # grip, switch to base while gripping, release, grip again, switch back
+                buttons = {}
+                tick = 0
+
+                def __init__(self, *unused):
+                    pass
+
+                def read_all(self):
+                    i = self.tick
+                    self.tick += 1
+                    arm = node.arms["left"]
+                    frames.append((arm.engaged, arm.rot_frame, node.rot_frame))
+                    if i == 3:
+                        node.read_commands(io.StringIO("rot_frame base\nbogus\nrot_frame sideways\n"))
+                    if i == 7:
+                        node.set_rot_frame("tool")
+                    if i == 9:
+                        raise KeyboardInterrupt
+                    squeeze = 0.0 if i in (0, 5) else 1.0
+                    return {"left": (True, np.zeros(3), np.array([0, 0, 0, 1]), squeeze, 0)}
+
+                def close(self):
+                    pass
+
+            with patch.object(teleop, "QuestController", return_value=SwitchQuest()):
+                teleop.run_session(node, chain, args)
+            self.assertEqual(frames[2], (True, "tool", "tool"))   # engaged in the start frame
+            self.assertEqual(frames[4], (True, "tool", "base"))   # switched while gripping: arm keeps tool
+            self.assertEqual(frames[7], (True, "base", "base"))   # re-gripped: base frame
+            self.assertEqual(frames[8], (True, "base", "tool"))   # bad commands ignored; switch back pending
+        finally:
+            if node:
+                node.destroy_node()
+            rclpy.try_shutdown()
+            left.close()
 
     def test_park_skipped_without_ethernet_link(self):
         args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--dry-run"])

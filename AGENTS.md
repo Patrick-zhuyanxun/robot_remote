@@ -111,3 +111,10 @@
 - 預設實機路徑改為 `--backend real-ros`：`real_robot/dual_arm_driver.launch.py`（每臂一組 ros2_control_node / RSP(frame_prefix) / spawner，namespace /left、/right，controller.yaml 改以 `/**/` 為鍵；6 s 後 `/<side>/igus_rebel/reset_and_enable`；ROS_DOMAIN_ID 42 localhost）。teleop 讀 `/<side>/joint_states`，以 30 Hz 單點短軌跡送 `/<side>/rebel_arm_trajectory_controller/joint_trajectory`；啟動回 home、退出回 0°（`move_to()`，含兩臂 guard）。`run_quest_real_arm.sh` 預設 real-ros。GUI Real 模式：先啟 driver（等 success=True × 臂數）→ teleop → RViz；Stop all：回 0° → teleop → viz → driver。
 - **實機驗證（使用者授權、確認路徑安全）**：兩臂 driver 啟動並啟用 → teleop real-ros 將兩臂移到 home（左 64.2/49.2°、右 64.1/49.3°）→ Ctrl+C 回 0°（殘差 < 1°）。未接 Quest 實際遙控；GUI 流程以 mock driver 驗證。48 項測試通過。
 - 遺留：driver 連線時本身會 SetActive/Reset/Enable（dry run 也會）；JTC goal tolerance 使回位殘差 ~0.7–1°。
+
+## 執行中切換旋轉座標系（2026-10-16，Claude）
+
+- 使用者要求：連線後的執行畫面多一個按鈕，選擇 tool frame 或 base frame。沿用既有 `--rot-frame tool|base`（只影響旋轉；平移一律沿手臂底座軸）。
+- GUI 執行頁新增「Rotation: TOOL/BASE frame」按鈕（模擬與實機皆有）：經 teleop 的 stdin 送 `rot_frame base|tool`（GUI 啟動 teleop 時開 stdin pipe，同 recorder 做法）；按鈕標籤依 teleop 的確認日誌 `rotation frame: …` 更新，確認前停用；選擇寫入 `config/launcher.json` 供下次啟動。終端機啟動時可用 `ros2 topic pub --once /quest_teleop/set_rot_frame std_msgs/msg/String "data: base"`。
+- 安全：握持中的手臂保留原座標系，放開再握才套用（兩種映射對同一手勢給出不同目標，中途切換會讓工具擺動）。
+- 驗證：新增整合測試（握持中切換不生效、重握後生效、錯誤指令忽略）與隱藏 Tk 測試（按鈕送指令、依確認更新、存設定）；50 項測試通過。未在實機或實際頭盔上試手感。
