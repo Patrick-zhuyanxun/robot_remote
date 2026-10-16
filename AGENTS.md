@@ -80,6 +80,6 @@
 
 ## RViz 實機事前測試與馬達啟用（2026-10-16，Claude）
 
-- `real_robot/rviz_pretest.sh [left|right] [--yes] [--mock]`：一條指令啟動 igus ROS driver（`config/real_arms.json` 的 IP）→ 等待控制器就緒 → 詢問後呼叫 `/igus_rebel/reset_and_enable` 並確認成功 → MoveIt + RViz（ROS_DOMAIN_ID 91、localhost only）。關閉 RViz / Ctrl+C 時整個 driver process group 一起結束。若 Quest 實機遙控或另一個 ros2_control_node 在跑則拒絕啟動。mock 模式已驗證（driver → MoveIt 就緒 → 關閉後無殘留程序）；實機僅由使用者手動用相同指令序列驗證過。
+- `ros2 launch real_robot/rviz_pretest.launch.py arm:=left|right [enable_motors:=false] [hardware_protocol:=mock_hardware]`（使用者要求用 ros2 launch，不用 sh）：include `igus_rebel/rebel.launch.py`（IP 取自 `config/real_arms.json`）+ 6 s 後 `ros2 service call /igus_rebel/reset_and_enable` + `move_group.launch.py`（RViz），全部以 SetEnvironmentVariable 設為 ROS_DOMAIN_ID 91、localhost only。mock 已驗證（driver 環境變數正確、/joint_states 可讀、Ctrl+C 無殘留）；啟用步驟只能實機驗證。不再檢查 Quest 遙控是否同時執行，操作者須自行先關閉。
 - 使用者以 Quest 乙太網路版啟動時遇到 `_MNE`（舊 ROS driver 關閉後馬達停用）。新增 `EthernetArm.enable_motors()` / `--enable-motors`：僅在 ESTOP=3、CRI active、無程式執行、錯誤只有 MNE（關節碼 0/4、KINSTATE 0/99）時送 Reset → Enable，並等待 STATUS 變為無問題（≤ 6 s），否則拒絕。Reset 也會重置機器人的數位輸出。新增 3 項測試，共 37 項通過。
 - 手冊 Real robot 頁新增「1 · RViz pre-test」分頁（按鈕燈色、一條指令流程、不動時的排查）。

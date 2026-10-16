@@ -123,12 +123,14 @@ motion even though Isaac runs below real time (≈0.5× with three cameras).
 ## Pre-test of a physical arm in RViz (igus ROS driver)
 
 ```bash
-./real_robot/rviz_pretest.sh left     # or right; --yes skips the enable question; --mock without a robot
+source /opt/ros/humble/setup.bash && source igus_ws/install/setup.bash
+ros2 launch real_robot/rviz_pretest.launch.py arm:=left   # arm:=right, enable_motors:=false, hardware_protocol:=mock_hardware
 ```
 
-Starts the igus driver for that arm (`config/real_arms.json`), asks before Reset + Enable, then opens
-MoveIt + RViz (ROS_DOMAIN_ID 91, localhost only). Use Velocity/Acceleration Scaling 0.05; start from straight up
-with a joint move. Goal states `home` = (0, 0, 65, 0, 50, 0)° and `zero`. Closing RViz / Ctrl+C stops everything.
+Starts the igus driver for that arm (`config/real_arms.json`), enables the motors about 6 s later
+(`/igus_rebel/reset_and_enable`), and opens MoveIt + RViz, all on ROS_DOMAIN_ID 91, localhost only. Use
+Velocity/Acceleration Scaling 0.05; start from straight up with a joint move. Goal states `home` = (0, 0, 65, 0, 50, 0)°
+and `zero`. Ctrl+C stops everything.
 Do not run it together with the Quest teleop: one CRI client controls an arm.
 
 ## Physical dual arms over Ethernet (teleop only)
