@@ -104,3 +104,10 @@
 - `enable_motors` 也會 Reset 鎖住的運動錯誤（KINSTATE 13/14/50/51/99，關節碼僅 0/4）；`problem()` 附上 KINSTATE 文字說明。
 - 使用者決定：Ethernet 連上後先以 10°/s 移到 home (0, 0, 65, 0, 50, 0)°（`start_home()`，同 park 的串流與兩臂 guard；`--no-start-home` 略過，GUI 勾選預設開），關閉時回全軸 0°（`--park-deg` 預設改回全 0）。44 項測試通過（含啟動姿態 = home、退出 = 0 的整合測試）。
 - 使用者問 sh 是否 source ROS：有（ros_env.sh、/opt/ros/humble、igus_ws），但 Ethernet 控制不經 ROS，KINSTATE 為控制器回報，與 ROS 無關。
+
+## 實機改走 igus ROS driver（2026-10-16，Claude；使用者要求「用 ROS2 topic 送 command，像 Isaac 一樣」）
+
+- Position Interface 直連在 RobotControl V15 上：回 `OK`、CONFIG SetPositionInterface 不回覆、串流起步 KINSTATE 51（暖機後仍發生）。另寫了 CRI ALIVEJOG 速度點動模式（`--control jog`，仿 driver：2 %/(deg/s)、10 ms、0.4 ff + 1.0 誤差），假控制器測試通過但未上實機；直連整條路徑保留為實驗選項 `--backend real`。
+- 預設實機路徑改為 `--backend real-ros`：`real_robot/dual_arm_driver.launch.py`（每臂一組 ros2_control_node / RSP(frame_prefix) / spawner，namespace /left、/right，controller.yaml 改以 `/**/` 為鍵；6 s 後 `/<side>/igus_rebel/reset_and_enable`；ROS_DOMAIN_ID 42 localhost）。teleop 讀 `/<side>/joint_states`，以 30 Hz 單點短軌跡送 `/<side>/rebel_arm_trajectory_controller/joint_trajectory`；啟動回 home、退出回 0°（`move_to()`，含兩臂 guard）。`run_quest_real_arm.sh` 預設 real-ros。GUI Real 模式：先啟 driver（等 success=True × 臂數）→ teleop → RViz；Stop all：回 0° → teleop → viz → driver。
+- **實機驗證（使用者授權、確認路徑安全）**：兩臂 driver 啟動並啟用 → teleop real-ros 將兩臂移到 home（左 64.2/49.2°、右 64.1/49.3°）→ Ctrl+C 回 0°（殘差 < 1°）。未接 Quest 實際遙控；GUI 流程以 mock driver 驗證。48 項測試通過。
+- 遺留：driver 連線時本身會 SetActive/Reset/Enable（dry run 也會）；JTC goal tolerance 使回位殘差 ~0.7–1°。

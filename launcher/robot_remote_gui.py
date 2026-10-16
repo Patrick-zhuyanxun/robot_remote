@@ -164,7 +164,7 @@ class App(tk.Tk):
         g.pack(fill="x", pady=4)
         self.v_target = tk.StringVar(value=self.cfg["target"])
         ttk.Radiobutton(g, text="Isaac Sim dual-arm simulation", value="isaac", variable=self.v_target).pack(anchor="w", padx=8)
-        ttk.Radiobutton(g, text="Real igus ReBeL dual arms — wired Ethernet (teleop only)", value="real",
+        ttk.Radiobutton(g, text="Real igus ReBeL arms — igus ROS driver over wired Ethernet (teleop only)", value="real",
                         variable=self.v_target).pack(anchor="w", padx=8)
         self.real_box = ttk.Frame(g)
         self.real_box.pack(fill="x", padx=28, pady=(0, 4))
@@ -191,8 +191,8 @@ class App(tk.Tk):
                         variable=self.v_real_start_home).pack(side="left", padx=14)
         ttk.Checkbutton(row, text="Return to all joints 0 deg before exit (10 deg/s)",
                         variable=self.v_real_park).pack(side="left", padx=14)
-        ttk.Label(self.real_box, text="Limits: 20 deg/s per joint, 0.15 m/s, 30 deg/s. CRI TCP 3920. "
-                                      "Starts at the current pose; never homes on its own.",
+        ttk.Label(self.real_box, text="Starts the igus ROS driver per arm, then the teleop on its topics. Limits: 20 deg/s "
+                                      "per joint, 0.15 m/s, 30 deg/s.",
                   style="Dim.TLabel").pack(anchor="w")
         self.v_target.trace_add("write", lambda *_: self._target_changed())
 
@@ -472,8 +472,28 @@ class App(tk.Tk):
         cfg = self.cfg
         self._set("sim", C["dim"], "not used (real robot)")
         self._set("record", C["dim"], "not available on the real robot yet")
+        # 1) the igus ROS driver of each selected arm (real_robot/dual_arm_driver.launch.py), motors enabled
+        mock = os.environ.get("ROBOT_REMOTE_DRIVER_MOCK") == "1"  # automated tests: no robot
+        enable = cfg["real_enable"] and not cfg["real_dry_run"] and not mock
+        launch = (f"source /opt/ros/humble/setup.bash && source '{ROOT}/igus_ws/install/setup.bash' && "
+                  f"exec ros2 launch '{ROOT}/real_robot/dual_arm_driver.launch.py' arms:={','.join(cfg['arms'])} "
+                  f"enable_motors:={'true' if enable else 'false'} left_ip:={cfg['left_ip']} right_ip:={cfg['right_ip']}"
+                  + (" hardware_protocol:=mock_hardware" if mock else ""))
+        self._set("sim", C["warn"], "starting the igus ROS driver(s)...")
+        self.procs["driver"] = Proc("driver", ["bash", "-c", launch], self._on_line)
+        d, want = self.procs["driver"], len(cfg["arms"])
+        pat = "success=True" if enable else "Configured and activated.*rebel_arm_trajectory_controller"
+        end = time.monotonic() + 45
+        while time.monotonic() < end and d.alive():
+            if sum(bool(re.search(pat, ln)) for ln in d.lines) >= want or any("success=False" in ln for ln in d.lines):
+                break
+            time.sleep(0.5)
+        if any("success=False" in ln for ln in d.lines) or sum(bool(re.search(pat, ln)) for ln in d.lines) < want:
+            self._set("sim", C["err"], f"driver / motor enable failed - e-stop? arm on? log: {d.log_path.name}")
+            return
+        self._set("sim", C["ok"], "driver up" + (", motors enabled" if enable else ""))
+        # 2) the Quest teleop, streaming to the drivers' trajectory controllers (--backend real-ros)
         cmd = [str(ROOT / "quest_teleop" / "run_quest_real_arm.sh"), "--arms", *cfg["arms"],
-               "--left-ip", cfg["left_ip"], "--right-ip", cfg["right_ip"],
                "--yaw-deg", str(cfg["yaw_deg"]), "--quiet"]
         if cfg["yaw_deg"] == 180:
             cmd.append("--swap-hands")
@@ -483,14 +503,12 @@ class App(tk.Tk):
             cmd.append("--no-park")
         if not cfg["real_start_home"]:
             cmd.append("--no-start-home")
-        if cfg["real_enable"] and not cfg["real_dry_run"]:
-            cmd.append("--enable-motors")
-        self._set("teleop", C["warn"], "connecting to selected arms over Ethernet TCP...")
+        self._set("teleop", C["warn"], "connecting to the drivers, then moving to home...")
         self.procs["teleop"] = Proc("teleop", cmd, self._on_line)
         p = self.procs["teleop"]
         if not self._wait_for(p, r"real arm connected", 60):
             p.interrupt()
-            self._set("teleop", C["err"], f"Ethernet preflight failed: check IP, motor state and CRI ownership; log: {p.log_path.name}")
+            self._set("teleop", C["err"], f"no joint states from the driver(s); log: {p.log_path.name}")
             return
         self._set("sim", C["ok"], "robot connected")
         if cfg["real_rviz"]:
@@ -548,6 +566,9 @@ class App(tk.Tk):
             self.events.put(("rec", "teleop", 0))
 
     def _on_line(self, name, line):
+        if name == "driver" and any(k in line for k in ("Connected to ReBeL", "success=", "did not accept",
+                                                         "still report", "Hardware error")):
+            self._msg(f"[driver] {line.split(']: ')[-1][:200]}")
         if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go", "RobotError", "[park]", "[home]", "motors enabled", "watching the", "assumed to stay", "apart (surface", "guard blind",
                                                          "start pose", "dry run")):
             self._msg(f"[robot] {line.split(']: ')[-1]}")
@@ -640,7 +661,7 @@ class App(tk.Tk):
                     if not self.procs["record"].alive():
                         break
                     time.sleep(0.5)
-            for key in ("teleop", "viz", "sim"):  # RViz stays up while the arms return home
+            for key in ("teleop", "viz", "driver", "sim"):  # RViz and the drivers stay up while the arms return
                 if key in self.procs:
                     self.procs[key].interrupt()
                     for _ in range(240 if key == "teleop" and parking else 40):  # the return to 0 deg takes up to ~20 s

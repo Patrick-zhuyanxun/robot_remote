@@ -20,6 +20,15 @@ ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG = ROOT / "config/real_arms.json"
 
 
+# Jog control (CRI ALIVEJOG velocity jog, as the igus ROS driver Igus_rebel does it): jog [%] = 2.0 * velocity [deg/s]
+# (empirical scale of that driver), sent every 10 ms; velocity = 0.4 * feed-forward + 1.0 * position error, the
+# gains of its rebel_arm_trajectory_controller (tuned against a fit of the real arm at Override 100).
+JOG_PERCENT_PER_DEG_S = 2.0
+JOG_PERIOD = 0.01
+JOG_KP = 1.0
+JOG_FF = 0.4
+
+
 class RobotError(RuntimeError):
     pass
 
@@ -112,7 +121,13 @@ def load_endpoints(config=DEFAULT_CONFIG, left_ip=None, right_ip=None):
 class EthernetArm:
     def __init__(self, side, host, cri_port=3920, state_timeout=0.5, command_timeout=0.25,
                  max_joint_vel=0.35, max_track_error=math.radians(15), rate=30,
-                 engage_tolerance=math.radians(0.5), warmup_ticks=4):
+                 engage_tolerance=math.radians(0.5), warmup_ticks=4, control="position"):
+        """control: "jog" = CRI ALIVEJOG velocity jog (like the igus ROS driver, proven on our arms) or
+        "position" = Position Interface streaming (RobotControl V15 stopped it with KINSTATE 51 on our arm)."""
+        if control not in ("jog", "position"):
+            raise ValueError(f"unknown control mode {control}")
+        self.jogging = control == "jog"
+        self.jog = [0.0] * 6
         self.side, self.host, self.cri_port = side, host, cri_port
         self.state_timeout, self.command_timeout = state_timeout, command_timeout
         self.max_joint_vel, self.max_track_error, self.rate = max_joint_vel, max_track_error, rate
@@ -209,12 +224,20 @@ class EthernetArm:
         try:
             while not self._closed.is_set():
                 now = time.monotonic()
-                if now - last_alive >= .2:
+                if self.jogging and now - last_alive >= JOG_PERIOD:
+                    with self._lock:
+                        st = self.status
+                        live = (self.moving and now - self.last_command < 0.1 and st is not None
+                                and now - st.received < 0.2)  # stale command or STATUS: zero jog at once
+                        jog = self.jog if live else [0.0] * 6
+                    self._send("ALIVEJOG", " ".join(f"{v:.4f}" for v in jog) + " 0 0 0")
+                    last_alive = now
+                elif not self.jogging and now - last_alive >= .2:
                     self._send("ALIVEJOG", "0 0 0 0 0 0 0 0 0")
                     last_alive = now
                 with self._lock:
                     sockets = [s for s in (self.cri, self.position) if s is not None]
-                readable, _, _ = select.select(sockets, [], [], .02)
+                readable, _, _ = select.select(sockets, [], [], .004 if self.jogging else .02)
                 for sock in readable:
                     data = sock.recv(65536)
                     if not data:
@@ -258,7 +281,8 @@ class EthernetArm:
                 raise RobotError(f"{self.side}: CRI is passive; close the other driver / control client first")
             if self.program_state != 0:
                 raise RobotError(f"{self.side}: robot program is running / paused or RUNSTATE is unavailable")
-            if position and (self.position is None or time.monotonic() - self.position_time > self.state_timeout):
+            if position and not self.jogging and (self.position is None
+                                                  or time.monotonic() - self.position_time > self.state_timeout):
                 raise RobotError(f"{self.side}: stale Position Interface state")
 
     def enable_motors(self, timeout=6.0):
@@ -280,7 +304,7 @@ class EthernetArm:
         # MNE (motors off) and a latched kinematic stop (e.g. KINSTATE 50/51 after a rejected target, 13/14 at a
         # joint limit) are cleared by Reset + Enable; drive / encoder / current errors are not touched.
         not_enabled_only = all(e in (0, 4) for e in status.joint_errors) and status.kinstate in (0, 13, 14, 50, 51, 99) \
-            and status.error.lower().strip("_") in ("mne", "noerror", "no_error")
+            and set(t for t in status.error.upper().split("_") if t) <= {"MNE", "NOTREADY", "NOERROR", "NO", "ERROR"}
         if not not_enabled_only:
             raise RobotError(f"{self.side}: {status.problem()} is more than 'motor not enabled'; "
                              "check the robot before enabling")
@@ -299,6 +323,11 @@ class EthernetArm:
 
     def prepare(self):
         self.require_ready()
+        if self.jogging:
+            # same start-up as the igus driver: joint jog mode, velocity override 100 % (jog = commanded speed)
+            self.command("MotionTypeJoint")
+            self.command("Override 100.0")
+            return
         port, running, in_use = self.interface
         if in_use:
             raise RobotError(f"{self.side}: Position Interface already in use by another client")
@@ -306,7 +335,18 @@ class EthernetArm:
             # Record ownership before the request so partial failure is also cleaned up.
             self.enabled_interface = True
             self._send("CONFIG", "SetPositionInterface true")
-            self._wait(lambda: self.interface[1])
+            # The CRI document says the new state is also sent in reply to CONFIG, but RobotControl V15 only
+            # logs "Position Interface: Starting": poll GetPositionInterface until it reports running.
+            end = time.monotonic() + 4.0
+            while not self.interface[1]:
+                if time.monotonic() > end:
+                    raise RobotError(f"{self.side}: Position Interface did not start")
+                self._send("CMD", "GetPositionInterface")
+                try:
+                    self._wait(lambda: self.interface[1], timeout=0.25)
+                except RobotError:
+                    if self.fault or self._closed.is_set():
+                        raise
         pos = socket.create_connection((self.host, port), timeout=2)
         pos.settimeout(.1)
         pos.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
@@ -325,7 +365,7 @@ class EthernetArm:
         if len(q) != 6:
             raise RobotError(f"{self.side}: exactly six joint targets are required")
         q = finite_floats(q, 6)
-        measured = self.position_joints
+        measured = self.measured()
         if max(abs(x-y) for x, y in zip(q, measured)) > self.max_track_error:
             raise RobotError(f"{self.side}: excessive joint following error")
         if not self.moving:
@@ -339,7 +379,10 @@ class EthernetArm:
         self.fresh = False
         with self._lock:
             self.require_ready(position=True)
-            self._position(q)
+            if self.jogging:
+                self.jog = self._jog_toward(q)
+            else:
+                self._position(q)
             self.last_target, self.last_command = q, time.monotonic()
 
     def check_first_target(self, q):
@@ -348,15 +391,36 @@ class EthernetArm:
         if len(q) != 6:
             raise RobotError(f"{self.side}: exactly six joint targets are required")
         q = finite_floats(q, 6)
-        step = max(abs(x - y) for x, y in zip(q, self.position_joints))
+        step = max(abs(x - y) for x, y in zip(q, self.measured()))
         if step > self.max_track_error:
             raise RobotError(f"{self.side}: excessive joint following error")
         if step > self.max_joint_vel / self.rate + self.engage_tolerance + 1e-6:
             raise RobotError(f"{self.side}: target exceeds per-tick joint speed limit")
 
+    def measured(self):
+        """Latest measured joints [rad]: Position Interface stream, or CRI STATUS POSJOINTCURRENT in jog mode."""
+        with self._lock:
+            return self.position_joints if not self.jogging else self.status.joints
+
+    def _jog_toward(self, q):
+        """Velocity jog [%] that moves the arm along the target stream: feed-forward + position error."""
+        meas = self.status.joints
+        vmax = 1.2 * self.max_joint_vel
+        out = []
+        for qi, pi, mi in zip(q, self.last_target, meas):
+            v = JOG_FF * (qi - pi) * self.rate + JOG_KP * (qi - mi)
+            v = max(-vmax, min(vmax, v))
+            out.append(max(-100.0, min(100.0, JOG_PERCENT_PER_DEG_S * math.degrees(v))))
+        return out
+
     def begin_stream(self):
         """Seed the measured pose and select the Position Interface as the position source (the arm holds)."""
         self.require_ready(position=True)
+        if self.jogging:
+            with self._lock:
+                self.last_target, self.last_command = self.status.joints, time.monotonic()
+                self.jog, self.moving, self.fresh = [0.0] * 6, True, True
+            return
         measured = self.position_joints
         self.owns_position = True
         with self._lock:
@@ -369,10 +433,18 @@ class EthernetArm:
         """Repeat the last target (keeps the stream steady and the watchdog fed while another arm warms up)."""
         with self._lock:
             self.require_ready(position=True)
+            if self.jogging:
+                self.jog = self._jog_toward(self.last_target)
+                self.last_command = time.monotonic()
+                return
             self._position(self.last_target)
             self.last_command = time.monotonic()
 
     def hold(self):
+        if self.jogging:
+            with self._lock:
+                self.jog, self.moving, self.last_target = [0.0] * 6, False, None
+            return
         if self.owns_position:
             # Close immediately on failed ACK; never leave a live position source behind.
             try:
@@ -385,7 +457,7 @@ class EthernetArm:
 
     def joints(self):
         with self._lock:
-            if self.position_joints is not None:
+            if self.position_joints is not None and not self.jogging:
                 return self.position_joints, self.position_time
             return self.status.joints, self.status.received
 
@@ -393,6 +465,12 @@ class EthernetArm:
         """Immediate socket close is the Position Interface's documented stop mechanism."""
         self._closed.set()
         with self._changed:
+            self.jog = [0.0] * 6
+            if self.jogging and self.cri is not None:
+                try:
+                    self._send("ALIVEJOG", "0 0 0 0 0 0 0 0 0")  # stop the jog before anything else
+                except OSError:
+                    pass
             # Closing position TCP takes precedence over waiting on any CRI send.
             if self.position is not None:
                 try:
@@ -452,10 +530,12 @@ def watch_arm(side, host, cri_port=3920, state_timeout=0.5):
 
 class EthernetArms:
     """All selected arms must pass preflight; any transport fault closes the pair."""
-    def __init__(self, endpoints, sides=("left", "right"), dry_run=False, enable_motors=False, **limits):
-        self.arms = {s: EthernetArm(s, **endpoints[s], **limits) for s in sides}
+    def __init__(self, endpoints, sides=("left", "right"), dry_run=False, enable_motors=False, control="position",
+                 **limits):
+        self.arms = {s: EthernetArm(s, **endpoints[s], control=control, **limits) for s in sides}
         self.dry_run = dry_run
         self.enable_motors = enable_motors
+        self.control = control
         self.enabled = []  # sides whose motors this session enabled
         self.fault = None
         self._closed = threading.Event()
@@ -502,7 +582,7 @@ class EthernetArms:
             starting = [a for s, a in self.arms.items() if s in commands and not a.moving]
             for arm in starting:
                 arm.check_first_target(commands[arm.side])
-            if starting:
+            if starting and self.control == "position":
                 # The robot interpolates over the AVERAGE interval between received targets. Right after the
                 # seed that interval is ~ms, so the first real target looked like a jump and the controller
                 # stopped the arm with a kinematic error (KINSTATE 51 seen on the right arm). Select the
@@ -546,6 +626,8 @@ class EthernetArms:
         start = {side: arm.joints()[0] for side, arm in self.arms.items()}
         span = max(abs(t - q) for qs in start.values() for t, q in zip(target, qs))
         steps = max(1, math.ceil(span / vel * rate))
+        if self.control == "jog":
+            settle = max(settle, 3.0)  # velocity loop: let the position error decay before releasing
         log(f"[park] moving {', '.join(self.arms)} to {[round(math.degrees(t), 1) for t in target]} deg "
             f"({steps / rate:.1f} s at {math.degrees(vel):.0f} deg/s)")
         for k in range(1, steps + 1 + int(settle * rate)):

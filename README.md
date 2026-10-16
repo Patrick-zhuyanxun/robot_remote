@@ -152,7 +152,23 @@ Velocity/Acceleration Scaling 0.05; start from straight up with a joint move. Go
 and `zero`. Ctrl+C stops everything.
 Do not run it together with the Quest teleop: one CRI client controls an arm.
 
-## Physical dual arms over Ethernet (teleop only)
+## Physical arms through the igus ROS driver (teleop only)
+
+Like the Isaac sim, the Quest teleop publishes on ROS topics; the igus ROS driver (`Igus_rebel`, CRI) drives each arm.
+Verified on both real arms (2026-10-16): enable, home, back to 0°.
+
+```bash
+# terminal 1: one driver per arm in /left and /right (IPs from config/real_arms.json), motors enabled after ~6 s
+source /opt/ros/humble/setup.bash && source igus_ws/install/setup.bash
+ros2 launch real_robot/dual_arm_driver.launch.py arms:=left,right
+# terminal 2: Quest teleop -> /<side>/rebel_arm_trajectory_controller/joint_trajectory
+./quest_teleop/run_quest_real_arm.sh --arms left right
+```
+
+The launcher's Real mode does both (and RViz). After connecting the arms move to home (0, 0, 65, 0, 50, 0)°, on
+exit back to 0°. The direct CRI client (`--backend real`, below) is kept as an experimental alternative.
+
+## Direct Ethernet CRI client (experimental, `--backend real`)
 
 | Arm | Controller | Address | Communication |
 | --- | --- | --- | --- |

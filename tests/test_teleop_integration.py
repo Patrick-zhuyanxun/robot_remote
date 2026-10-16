@@ -18,17 +18,17 @@ from test_ethernet_rebel import FakeRobot
 @unittest.skipIf(teleop is None, "source ROS and use .venv_quest/bin/python for node integration")
 class NodeIntegrationTests(unittest.TestCase):
     def test_default_dual_ethernet_and_no_home(self):
-        args, _ = teleop.parse_args(["--backend", "real", "--dry-run"])
+        args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--dry-run"])
         self.assertEqual(args.arms, ["left", "right"])
         self.assertTrue(args.no_home)
         self.assertEqual(args.max_joint_vel, .35)
 
     def test_invalid_unsafe_arguments_are_rejected(self):
-        cases = [["--backend", "real", "--real-home"],
-                 ["--backend", "real", "--rate", "0"],
-                 ["--backend", "real", "--max-joint-vel", "nan"],
-                 ["--backend", "real", "--command-timeout", "2"],
-                 ["--arms", "left", "left"], ["--backend", "real-ros"]]
+        cases = [["--backend", "real", "--control", "position", "--real-home"],
+                 ["--backend", "real", "--control", "position", "--rate", "0"],
+                 ["--backend", "real", "--control", "position", "--max-joint-vel", "nan"],
+                 ["--backend", "real", "--control", "position", "--command-timeout", "2"],
+                 ["--arms", "left", "left"]]
         for argv in cases:
             with self.subTest(argv=argv), patch("sys.stderr"), self.assertRaises(SystemExit):
                 teleop.parse_args(argv)
@@ -46,7 +46,7 @@ class NodeIntegrationTests(unittest.TestCase):
         node = None
         rclpy.init()
         try:
-            args, _ = teleop.parse_args(["--backend", "real", "--dry-run"])
+            args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--dry-run"])
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])
             with patch.object(teleop, "load_endpoints", return_value={"left": left.endpoint, "right": right.endpoint}):
@@ -84,7 +84,7 @@ class NodeIntegrationTests(unittest.TestCase):
         node = None
         rclpy.init()
         try:
-            args, _ = teleop.parse_args(["--backend", "real", "--quiet", "--no-park", "--no-start-home"])
+            args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--quiet", "--no-park", "--no-start-home"])
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])
             with patch.object(teleop, "load_endpoints", return_value={"left": left.endpoint, "right": right.endpoint}):
@@ -145,7 +145,7 @@ class NodeIntegrationTests(unittest.TestCase):
         node = None
         rclpy.init()
         try:
-            args, _ = teleop.parse_args(["--backend", "real", "--quiet", "--park-vel-deg", "30"])
+            args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--quiet", "--park-vel-deg", "30"])
             self.assertEqual(args.park_deg, [0.0] * 6)  # start: home (0, 0, 65, 0, 50, 0); exit: all 0
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])
@@ -200,7 +200,7 @@ class NodeIntegrationTests(unittest.TestCase):
         node = None
         rclpy.init()
         try:
-            args, _ = teleop.parse_args(["--backend", "real", "--quiet", "--park-vel-deg", "30"])
+            args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--quiet", "--park-vel-deg", "30"])
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])
             with patch.object(teleop, "load_endpoints", return_value={"left": left.endpoint, "right": right.endpoint}):
@@ -250,7 +250,7 @@ class NodeIntegrationTests(unittest.TestCase):
                 raise BrokenPipeError("robot closed")
         chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS)
         stub = type("Node", (), {"ethernet": Link(), "arms": {"left": type("A", (), {"chain": chain})()}})()
-        args, _ = teleop.parse_args(["--backend", "real", "--arms", "left"])
+        args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--arms", "left"])
         logged = []
         log = type("L", (), {"error": lambda self, m: logged.append(m), "warning": lambda self, m: None})()
         teleop.park_on_exit(stub, args, log)  # must not raise
@@ -273,7 +273,7 @@ class NodeIntegrationTests(unittest.TestCase):
         node = None
         rclpy.init()
         try:
-            args, _ = teleop.parse_args(["--backend", "real", "--arms", "left", "--quiet", "--no-park", "--no-start-home",
+            args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--arms", "left", "--quiet", "--no-park", "--no-start-home",
                                          "--max-lin-vel", "0.3", "--max-joint-vel", "0.6", *extra_args])
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])
@@ -343,8 +343,59 @@ class NodeIntegrationTests(unittest.TestCase):
         self.assertGreater(clearance(cap("left", teleop.HOME_DEG), cap("right", teleop.HOME_DEG)), 0.2)
         self.assertLess(clearance(cap("left", [-90, 60, 60, 0, 0, 0]), cap("right", teleop.HOME_DEG)), 0.0)
 
+    def test_jog_session_home_at_start_zero_at_exit(self):
+        left, right = FakeRobot(), FakeRobot()
+        left.joints_deg = [0.0, 0.0, 10.0, 0.0, 0.0, 0.0]
+        right.joints_deg = [5.0, 0.0, 0.0, 0.0, 10.0, 0.0]
+        node = None
+        rclpy.init()
+        try:
+            args, _ = teleop.parse_args(["--backend", "real", "--quiet", "--park-vel-deg", "18"])
+            self.assertEqual(args.control, "jog")
+            chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
+                                       tcp_xyz=teleop.TCP_PRESETS["flange"])
+            with patch.object(teleop, "load_endpoints", return_value={"left": left.endpoint, "right": right.endpoint}):
+                node = teleop.DualArmTeleop(args, chain)
+            at_start = []
+
+            class IdleQuest:
+                buttons = {}
+                ticks = 0
+
+                def __init__(self, *unused):
+                    pass
+
+                def read_all(self):
+                    self.ticks += 1
+                    if self.ticks == 1:
+                        at_start.extend([list(left.joints_deg), list(right.joints_deg)])
+                    if self.ticks > 3:
+                        raise KeyboardInterrupt
+                    idle = (True, np.zeros(3), np.array([0, 0, 0, 1]), 0.0, 0.0)
+                    return {"left": idle, "right": idle}
+
+                def close(self):
+                    pass
+            with patch.object(teleop, "QuestController", return_value=IdleQuest()):
+                teleop.run_session(node, chain, args)
+            for pose in at_start:
+                self.assertLess(np.max(np.abs(np.array(pose) - teleop.HOME_DEG)), 1.0, pose)
+            for robot in (left, right):
+                self.assertLess(np.max(np.abs(robot.joints_deg)), 0.5, robot.joints_deg)
+                self.assertFalse(any(robot.last_jog))
+                self.assertIn(("CMD", "MotionTypeJoint"), robot.commands)
+        finally:
+            import signal
+            signal.signal(signal.SIGINT, signal.default_int_handler)
+            signal.signal(signal.SIGTERM, signal.SIG_DFL)
+            if node:
+                node.destroy_node()
+            rclpy.try_shutdown()
+            left.close()
+            right.close()
+
     def test_park_skipped_without_ethernet_link(self):
-        args, _ = teleop.parse_args(["--backend", "real", "--dry-run"])
+        args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--dry-run"])
         self.assertTrue(args.dry_run)  # dry run never parks (park_on_exit returns before any motion)
 
         class Stub:

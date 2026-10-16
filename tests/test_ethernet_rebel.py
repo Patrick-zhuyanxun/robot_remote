@@ -40,6 +40,8 @@ class FakeRobot:
         self.refuse_enable = False
         self.ack_targets = True
         self.clear_on_reset = False
+        self.silent_config = True
+        self.last_jog_time, self.last_jog = 0.0, [0.0] * 6
         self.estop_value = 3
         self.follow = False  # True: the fake arm jumps to every streamed target (ideal tracking)
         self.cri = self.pos = None
@@ -99,6 +101,15 @@ class FakeRobot:
                     return
                 for tokens in frames.feed(data):
                     counter, category, *body = tokens
+                    if category == "ALIVEJOG":  # velocity jog: integrate like a (perfect) joint velocity loop
+                        now = time.monotonic()
+                        jog = [float(x) for x in body[:6]]
+                        if any(jog) and self.last_jog_time:
+                            dt = min(now - self.last_jog_time, 0.05)
+                            self.joints_deg = [q + j / 2.0 * dt for q, j in zip(self.joints_deg, jog)]
+                        self.last_jog_time = now
+                        self.last_jog = jog
+                        continue  # not recorded in commands (sent every 10 ms)
                     self.commands.append((category, *body))
                     cmd = " ".join(body)
                     if cmd == "GetActive":
@@ -109,7 +120,10 @@ class FakeRobot:
                         self.interface()
                     elif category == "CONFIG":
                         self.enabled = body[-1] == "true"
-                        self.interface()
+                        if not self.silent_config:  # RobotControl V15 does not answer CONFIG SetPositionInterface
+                            self.interface()
+                    elif cmd == "MotionTypeJoint" or cmd.startswith("Override "):
+                        self.reply(f"CMDACK {counter}")
                     elif cmd in ("Reset", "Enable"):
                         if cmd == "Enable" and self.error == 4 and not self.refuse_enable:
                             self.error, self.kinstate = 0, 0  # like the real arm: joints enable, NoError, KinOK
@@ -426,6 +440,40 @@ class DualTransportTests(unittest.TestCase):
                 self.assertIn(("CMD", "UsePositionInterface", "false"), robot.commands)
             left.close()
             right.close()
+
+
+class JogTests(unittest.TestCase):
+    """CRI ALIVEJOG velocity jog, as the igus ROS driver controls the arm."""
+    tearDown = DualTransportTests.tearDown
+    connect = DualTransportTests.connect
+
+    def setUp(self):
+        self.left, self.right = FakeRobot(), FakeRobot()
+        self.pair = None
+        self.left.joints_deg = [0, 0, 20, 0, 0, 0]
+
+    def test_jog_start_up_like_the_igus_driver_and_no_position_interface(self):
+        self.connect(control="jog")
+        for robot in (self.left, self.right):
+            cmds = [c for c in robot.commands if c[0] in ("CMD", "CONFIG")]
+            self.assertIn(("CMD", "MotionTypeJoint"), cmds)
+            self.assertIn(("CMD", "Override", "100.0"), cmds)
+            self.assertFalse(any("PositionInterface" in " ".join(c) and c[1] != "GetPositionInterface" for c in cmds))
+
+    def test_jog_park_reaches_the_target_and_stops_jogging(self):
+        self.connect(control="jog")
+        self.assertTrue(self.pair.park([0.0, 0.0, math.radians(65), 0.0, math.radians(50), 0.0], math.radians(30),
+                                       log=lambda m: None))
+        for robot in (self.left, self.right):
+            self.assertLess(max(abs(a - b) for a, b in zip(robot.joints_deg, [0, 0, 65, 0, 50, 0])), 0.5)
+            eventually(lambda: not any(robot.last_jog))  # released: zero jog
+        self.assertIsNone(self.pair.fault)
+
+    def test_jog_is_zeroed_when_commands_stop(self):
+        self.connect(control="jog", command_timeout=.4)
+        self.pair.send({"left": [0, 0, math.radians(20) + .01, 0, 0, 0]})
+        eventually(lambda: any(self.left.last_jog))
+        eventually(lambda: not any(self.left.last_jog), timeout=.5)  # no new target within 0.1 s -> zero jog
 
 
 class ParkTests(unittest.TestCase):
