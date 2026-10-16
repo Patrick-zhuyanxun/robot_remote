@@ -255,13 +255,13 @@ class NodeIntegrationTests(unittest.TestCase):
         signal.signal(signal.SIGINT, signal.default_int_handler)
         signal.signal(signal.SIGTERM, signal.SIG_DFL)
 
-    def _drive_left_toward_right(self, extra_args, ticks=110):
-        """Left arm driven by a fake Quest hand moving 40 cm toward the right arm; the right arm is someone
-        else's (only watched). Returns (min clearance over the run, right-arm CRI commands)."""
+    def _drive_left_toward_right(self, extra_args, right_deg, ticks=110, direction=(0.0, -1.0)):
+        """Left arm driven by a fake Quest hand moving 40 cm toward the right arm, which is not driven and stands
+        at right_deg. Returns (min clearance over the run, first clearance, right-arm CRI commands)."""
         from arm_collision import capsules, clearance, load_world_T_base
         left, right = FakeRobot(), FakeRobot()
         left.joints_deg = [0, 30, 60, 0, 40, 0]
-        right.joints_deg = list(teleop.HOME_DEG)
+        right.joints_deg = list(right_deg)
         left.follow = True
         node = None
         rclpy.init()
@@ -288,9 +288,10 @@ class NodeIntegrationTests(unittest.TestCase):
                         if self.tick > ticks:
                             raise KeyboardInterrupt
                         seen.append(clearance(capsules(chain, np.deg2rad(left.joints_deg), W["left"], .06, .04), rcaps))
-                        y = -min(0.4, max(0, self.tick - 3) * 0.006)  # operator right = toward the right arm
+                        k = min(0.6, max(0, self.tick - 3) * 0.006)  # operator -y = right = toward the right arm
                         squeeze = 0.0 if self.tick < 3 else 1.0
-                        hand = (True, np.array([0, y, 0]), np.array([0, 0, 0, 1]), squeeze, 0)
+                        hand = (True, np.array([direction[0] * k, direction[1] * k, 0]), np.array([0, 0, 0, 1]),
+                                squeeze, 0)
                         return {"left": hand, "right": hand}
 
                     def close(self):
@@ -308,8 +309,15 @@ class NodeIntegrationTests(unittest.TestCase):
             left.close()
             right.close()
 
+    def test_unopened_other_arm_is_assumed_at_zero_and_never_contacted(self):
+        guarded, start, right_cmds = self._drive_left_toward_right([], [0.0] * 6, ticks=160, direction=(-1.0, -1.0))
+        self.assertGreater(start, 0.15)
+        self.assertGreaterEqual(guarded, 0.05 - 0.01)  # held at the 5 cm margin to the (assumed) straight-up arm
+        self.assertLess(guarded, 0.08)
+        self.assertFalse(right_cmds)  # the other arm's controller is not even connected
+
     def test_watched_other_arm_stops_the_driven_arm_before_contact(self):
-        guarded, start, right_cmds = self._drive_left_toward_right([])
+        guarded, start, right_cmds = self._drive_left_toward_right(["--watch-other"], teleop.HOME_DEG)
         self.assertGreater(start, 0.15)
         self.assertGreaterEqual(guarded, 0.05 - 0.01)  # held at the 5 cm surface clearance (one step of margin)
         self.assertLess(guarded, 0.08)                 # ...after really approaching it
@@ -317,11 +325,6 @@ class NodeIntegrationTests(unittest.TestCase):
         self.assertIn(("CMD", "SetActive", "false"), right_cmds)
         self.assertFalse(any(c[:2] in (("CMD", "UsePositionInterface"), ("CONFIG", "SetPositionInterface"))
                              or c[1:2] in (("Enable",), ("Reset",)) for c in right_cmds))
-
-    def test_without_watching_the_other_arm_there_is_no_protection(self):
-        unguarded, _, right_cmds = self._drive_left_toward_right(["--no-watch-other"])
-        self.assertLess(unguarded, 0.04)  # the same motion goes inside the 5 cm margin
-        self.assertFalse(right_cmds)
 
     def test_calibrated_bases_and_capsule_clearance(self):
         from arm_collision import capsules, clearance, load_world_T_base

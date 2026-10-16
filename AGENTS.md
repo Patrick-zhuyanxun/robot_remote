@@ -90,3 +90,4 @@
 - 新 `quest_teleop/arm_collision.py`：每臂以膠囊表示（J1→J2→…→J6→法蘭，法蘭→XEG-32 夾爪中心、法蘭→刀尖；半徑 `--arm-radius 0.06`、`--tool-radius 0.04`），兩臂表面最小間距 < `--min-arm-dist`（預設改為 0.05 m 表面間距；舊版為 12 cm 點距離）且下一步會更近時拒絕該步並要求重新握持。實體後端用校正底座（world = camera_link），模擬用 USD 底座。回位（park）也使用同一 guard。
 - Ethernet 只選一臂時，另一臂以唯讀 CRI 連線（`watch_arm()`：只讀 STATUS，若成為 active 立即 `SetActive false`，從不設定 Position Interface、不送 Reset/Enable）提供姿態給 guard；其狀態逾時則被驅動的手臂保持不動。`--no-watch-other` 關閉（無兩臂保護）。
 - 驗證：segment 距離函式 300 組隨機暴力比對；新增 3 項整合／單元測試（左臂被假 Quest 推向右臂：有旁觀時停在 4.7 cm、旁觀臂只收到查詢與 SetActive false；不旁觀時越過 5 cm；校正臂距 0.448 m、home 間距 > 0.2 m、J1 −90° 伸展時重疊），共 40 項通過。未在實機驗證。未建模：支架、桌面、相機；膠囊半徑為估計值。
+- 使用者決定（2026-10-16）：只開一臂時，另一臂預設**假設維持全軸 0°**（`--other-arm-deg`，預設全 0），不連線其控制器（因為常常不會兩臂都開）。唯讀旁觀改為選用 `--watch-other`。測試：左臂推向假設直立的右臂時停在 4.9 cm，右臂控制器未收到任何連線；`--watch-other` 時停在 4.7 cm。40 項通過。

@@ -127,10 +127,10 @@ teleop step that would bring the two arms' surfaces closer than `--min-arm-dist`
 clearance is refused (both arms hold; release and re-grip). On the real arms the two bases are placed from the
 hand-eye calibrations in `config/arm_calibration.json` (camera_link in each base_link; right base 0.448 m from the
 left one; sources in `config/calibration/`); the simulation uses the USD poses. With **one** real arm selected the
-other arm is read **read-only** over CRI (STATUS only; the link hands control back with `SetActive false`) so the
-guard also works while someone else drives it; if its state goes stale the driven arm holds. `--no-watch-other`
-turns that off (no inter-arm protection). Not modelled: stand, table, cameras; the calibrations are marked
-unverified by their authors.
+other arm is **assumed to stay at all joints 0°** (straight up; `--other-arm-deg` for another pose) and its
+controller is not contacted. If someone is moving that arm, add `--watch-other`: its live pose is then read
+**read-only** over CRI (STATUS only; the link hands control back with `SetActive false`), and the driven arm holds
+if that state goes stale. Not modelled: stand, table, cameras; the calibrations are marked unverified by their authors.
 
 ## Pre-test of a physical arm in RViz (igus ROS driver)
 

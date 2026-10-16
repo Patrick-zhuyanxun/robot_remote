@@ -128,8 +128,10 @@ class DualArmTeleop(Node):
             self.base_poses = load_world_T_base(args.calibration)
             for side, arm in self.arms.items():
                 arm.world_T_base = self.base_poses[side]
-        self.watch = None          # read-only link to the arm we do NOT drive (Ethernet, one arm selected)
-        self.watch_side = None
+        self.watch = None          # optional read-only link to the arm we do NOT drive (--watch-other)
+        # One real arm selected: the other arm is assumed to stand still at --other-arm-deg (default all 0,
+        # straight up) for the collision guard, unless --watch-other reads its live pose.
+        self.watch_side = next((s for s in SIDES if s not in self.arms), None) if args.backend != "isaac" else None
         self.real = args.backend != "isaac"
         self.ethernet = None
         if args.backend == "real":
@@ -195,14 +197,18 @@ class DualArmTeleop(Node):
 
     def other_arm(self):
         """(side, capsules) of the watched arm from its latest STATUS, or (side, None) if that is stale."""
-        if self.watch is None:
+        if self.watch_side is None:
             return None, None
+        chain = self.arms[next(iter(self.arms))].chain
+        if self.watch is None:  # not watched: assumed parked at --other-arm-deg
+            return self.watch_side, capsules(chain, np.deg2rad(self.args.other_arm_deg), self.base_poses[self.watch_side],
+                                             self.args.arm_radius, self.args.tool_radius)
         with self.watch._lock:
             st, fault = self.watch.status, self.watch.fault
         if fault or st is None or time.monotonic() - st.received > self.args.state_timeout:
             return self.watch_side, None
-        return self.watch_side, capsules(self.arms[next(iter(self.arms))].chain, np.array(st.joints),
-                                         self.base_poses[self.watch_side], self.args.arm_radius, self.args.tool_radius)
+        return self.watch_side, capsules(chain, np.array(st.joints), self.base_poses[self.watch_side],
+                                         self.args.arm_radius, self.args.tool_radius)
 
     def destroy_node(self):
         if self.watch:
@@ -212,8 +218,8 @@ class DualArmTeleop(Node):
         return super().destroy_node()
 
     def wait_ready(self):
-        if self.ethernet and len(self.arms) == 1 and not self.args.no_watch_other:
-            other = next(s for s in SIDES if s not in self.arms)
+        if self.ethernet and len(self.arms) == 1 and self.args.watch_other:
+            other = self.watch_side
             ep = load_endpoints(self.args.config, self.args.left_ip, self.args.right_ip)[other]
             try:
                 self.watch = watch_arm(other, ep["host"], ep["cri_port"], self.args.state_timeout)
@@ -222,7 +228,10 @@ class DualArmTeleop(Node):
                                        f"(joints [deg] {np.round(np.rad2deg(self.watch.status.joints), 1).tolist()})")
             except (OSError, RobotError) as exc:
                 raise RobotError(f"cannot read the {other} arm for the collision guard ({exc}); "
-                                 "fix the link or pass --no-watch-other (no inter-arm protection)") from exc
+                                 "fix the link or run without --watch-other (assumes it at --other-arm-deg)") from exc
+        if self.watch_side and self.watch is None:
+            self.get_logger().info(f"collision guard: the {self.watch_side} arm is not driven and assumed to stay at "
+                                   f"{self.args.other_arm_deg} deg (use --watch-other if someone moves it)")
         if self.ethernet:
             self.ethernet.connect()
             for side in self.ethernet.enabled:
@@ -366,8 +375,12 @@ def parse_args(argv=None):
     p.add_argument("--tool-radius", type=float, default=0.04, help="capsule radius of flange/gripper/knife [m]")
     p.add_argument("--calibration", type=Path, default=DEFAULT_CALIBRATION,
                    help="real arms: hand-eye calibrations that place both arm bases (camera_link in each base)")
-    p.add_argument("--no-watch-other", action="store_true",
-                   help="Ethernet, one arm: do not read the other arm (then there is NO inter-arm protection)")
+    p.add_argument("--other-arm-deg", type=float, nargs=6, default=[0.0] * 6, metavar="J",
+                   help="real, one arm: pose [deg] the other (not driven) arm is assumed to keep, for the collision "
+                        "guard (default all 0 = straight up)")
+    p.add_argument("--watch-other", action="store_true",
+                   help="Ethernet, one arm: read the other arm's live pose read-only over CRI instead of assuming "
+                        "--other-arm-deg (when someone else is moving it)")
     p.add_argument("--gripper-open", type=float, default=0.00483688, help="carriage pos at trigger 0 [m]")
     p.add_argument("--gripper-closed", type=float, default=-0.0116631, help="carriage pos at trigger 1 [m]")
     p.add_argument("--no-home", action="store_true")
@@ -438,7 +451,7 @@ def park_on_exit(node, args, log):
         caps = [node.arms[s].capsules(cmd[s]) for s in cmd]
         if len(caps) == 1:
             side, other = node.other_arm()
-            if node.watch is not None and other is None:
+            if other is None:
                 return f"lost the {side} arm's state - finish the return by hand"
             if other is not None:
                 caps.append(other)
@@ -611,7 +624,7 @@ def run_session(node, chain, args):
             # step that brings the two arms' surfaces closer than --min-arm-dist while also reducing the
             # clearance (moving apart is always allowed). With one driven arm the other arm is the watched one,
             # read-only from its controller; if its state is stale the driven arm holds.
-            if cand and (both or node.watch is not None):
+            if cand and (both or node.watch_side is not None):
                 now = {s: (node.arms[s].q_meas if node.ethernet else node.arms[s].q_cmd) for s in node.arms}
                 nxt = {s: cand.get(s, now[s]) for s in node.arms}
                 if both:
