@@ -84,7 +84,7 @@ class NodeIntegrationTests(unittest.TestCase):
         node = None
         rclpy.init()
         try:
-            args, _ = teleop.parse_args(["--backend", "real", "--quiet", "--no-park"])
+            args, _ = teleop.parse_args(["--backend", "real", "--quiet", "--no-park", "--no-start-home"])
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])
             with patch.object(teleop, "load_endpoints", return_value={"left": left.endpoint, "right": right.endpoint}):
@@ -146,11 +146,13 @@ class NodeIntegrationTests(unittest.TestCase):
         rclpy.init()
         try:
             args, _ = teleop.parse_args(["--backend", "real", "--quiet", "--park-vel-deg", "30"])
-            self.assertEqual(args.park_deg, list(teleop.HOME_DEG))  # default park pose = home (0, 0, 65, 0, 50, 0)
+            self.assertEqual(args.park_deg, [0.0] * 6)  # start: home (0, 0, 65, 0, 50, 0); exit: all 0
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])
             with patch.object(teleop, "load_endpoints", return_value={"left": left.endpoint, "right": right.endpoint}):
                 node = teleop.DualArmTeleop(args, chain)
+
+            at_start = []
 
             class IdleQuest:  # operator never grips, then quits (Ctrl+C / Stop all)
                 buttons = {}
@@ -161,6 +163,8 @@ class NodeIntegrationTests(unittest.TestCase):
 
                 def read_all(self):
                     self.ticks += 1
+                    if self.ticks == 1:  # the Quest starts only after the move to the home pose
+                        at_start.extend([list(left.joints_deg), list(right.joints_deg)])
                     if self.ticks > 3:
                         raise KeyboardInterrupt
                     idle = (True, np.zeros(3), np.array([0, 0, 0, 1]), 0.0, 0.0)
@@ -171,8 +175,11 @@ class NodeIntegrationTests(unittest.TestCase):
 
             with patch.object(teleop, "QuestController", return_value=IdleQuest()):
                 teleop.run_session(node, chain, args)
+            self.assertEqual(len(at_start), 2)
+            for pose in at_start:
+                np.testing.assert_allclose(pose, teleop.HOME_DEG, atol=1e-6)
             for robot in (left, right):
-                np.testing.assert_allclose(robot.joints_deg, teleop.HOME_DEG, atol=1e-6)
+                np.testing.assert_allclose(robot.joints_deg, np.zeros(6), atol=1e-6)
                 self.assertFalse(robot.in_use)
             self.assertTrue(all(a.position is None for a in node.ethernet.arms.values()))
         finally:
@@ -222,7 +229,7 @@ class NodeIntegrationTests(unittest.TestCase):
                 teleop.run_session(node, chain, args)
             self.assertTrue(quest.closed)
             for robot in (left, right):
-                np.testing.assert_allclose(robot.joints_deg, teleop.HOME_DEG, atol=1e-6)
+                np.testing.assert_allclose(robot.joints_deg, np.zeros(6), atol=1e-6)
         finally:
             signal.signal(signal.SIGINT, signal.default_int_handler)
             signal.signal(signal.SIGTERM, signal.SIG_DFL)
@@ -266,7 +273,7 @@ class NodeIntegrationTests(unittest.TestCase):
         node = None
         rclpy.init()
         try:
-            args, _ = teleop.parse_args(["--backend", "real", "--arms", "left", "--quiet", "--no-park",
+            args, _ = teleop.parse_args(["--backend", "real", "--arms", "left", "--quiet", "--no-park", "--no-start-home",
                                          "--max-lin-vel", "0.3", "--max-joint-vel", "0.6", *extra_args])
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])

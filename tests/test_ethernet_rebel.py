@@ -39,6 +39,7 @@ class FakeRobot:
         self.mute_status = False
         self.refuse_enable = False
         self.ack_targets = True
+        self.clear_on_reset = False
         self.estop_value = 3
         self.follow = False  # True: the fake arm jumps to every streamed target (ideal tracking)
         self.cri = self.pos = None
@@ -112,6 +113,8 @@ class FakeRobot:
                     elif cmd in ("Reset", "Enable"):
                         if cmd == "Enable" and self.error == 4 and not self.refuse_enable:
                             self.error, self.kinstate = 0, 0  # like the real arm: joints enable, NoError, KinOK
+                        if cmd == "Reset" and self.clear_on_reset:
+                            self.kinstate = 0
                         self.reply(f"CMDACK {counter}")
                     elif cmd.startswith("UsePositionInterface"):
                         if self.reject_use and body[-1] == "true":
@@ -245,7 +248,7 @@ class DualTransportTests(unittest.TestCase):
         self.assertFalse(self.left.targets)
         self.assertFalse(self.right.targets)
         self.pair.send({"left": [0.001] * 6, "right": [-0.002] * 6})
-        eventually(lambda: len(self.left.targets) >= 2 and len(self.right.targets) >= 2)
+        eventually(lambda: len(self.left.targets) >= 6 and len(self.right.targets) >= 6)  # seed + 4 warm-up + target
         self.assertAlmostEqual(float(self.left.targets[-1][2]), math.degrees(.001), places=7)
         self.assertAlmostEqual(float(self.right.targets[-1][2]), math.degrees(-.002), places=7)
         self.assertEqual(len(self.left.targets[-1]), 8)  # Pos J + six joints; no E / C / tool
@@ -330,6 +333,28 @@ class DualTransportTests(unittest.TestCase):
         with self.assertRaisesRegex(RobotError, "still not enabled"):
             self.connect(enable_motors=True)
         self.assert_pair_closed()
+
+    def test_stream_start_warms_up_at_the_tick_rate(self):
+        self.connect(rate=30)
+        t0 = time.monotonic()
+        self.pair.send({"left": [.001] * 6})
+        eventually(lambda: len(self.left.targets) >= 6)
+        poses = [[float(x) for x in t[2:8]] for t in self.left.targets[:6]]
+        # seed + 4 warm-up repeats of the held pose, then the first real target
+        self.assertTrue(all(p == [0.0] * 6 for p in poses[:5]), poses)
+        self.assertAlmostEqual(poses[5][0], math.degrees(.001), places=6)
+        self.assertGreater(time.monotonic() - t0, 4 / 30 - 0.01)  # spaced at the tick rate, not back to back
+
+    def test_latched_kinematic_stop_is_reset_on_request(self):
+        self.left.kinstate = 51
+        with self.assertRaisesRegex(RobotError, "KINSTATE=51"):
+            self.connect()
+        self.left.close(); self.right.close()
+        self.left, self.right = FakeRobot(), FakeRobot()
+        self.left.kinstate = 51
+        self.left.clear_on_reset = True
+        self.connect(enable_motors=True)
+        self.assertEqual(self.pair.enabled, ["left"])
 
     def test_position_ok_acknowledgements_do_not_fault(self):
         self.connect()

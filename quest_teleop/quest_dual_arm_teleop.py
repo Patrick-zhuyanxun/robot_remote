@@ -367,8 +367,11 @@ def parse_args(argv=None):
     p.add_argument("--dry-run", action="store_true", help="real: observe + Quest IK, no configuration or motion")
     p.add_argument("--real-home", action="store_true",
                    help="real arm: first move slowly (8.6 deg/s) to the teleop start pose HOME_DEG; off = start where it is")
-    p.add_argument("--park-deg", type=float, nargs=6, default=list(HOME_DEG), metavar="J",
-                   help=f"Ethernet: joint pose [deg] every arm returns to before the program exits (default {HOME_DEG})")
+    p.add_argument("--park-deg", type=float, nargs=6, default=[0.0] * 6, metavar="J",
+                   help="Ethernet: joint pose [deg] every arm returns to before the program exits (default all 0)")
+    p.add_argument("--no-start-home", action="store_true",
+                   help=f"Ethernet: do not move the arms to the home pose {HOME_DEG} deg after connecting "
+                        "(teleop then starts wherever they are; all 0 = straight up is singular)")
     p.add_argument("--park-vel-deg", type=float, default=10.0, help="Ethernet: speed of that return [deg/s]")
     p.add_argument("--no-park", action="store_true", help="Ethernet: do not return to --park-deg on exit")
     p.add_argument("--enable-motors", action="store_true",
@@ -465,8 +468,38 @@ def main():
         rclpy.try_shutdown()
 
 
+def make_guard(node, args):
+    """Collision guard for the slow automatic moves (start home / park): stop if the arms' surfaces would come
+    closer than --min-arm-dist (the other, undriven arm at its assumed / watched pose)."""
+    def guard(cmd):
+        caps = [node.arms[s].capsules(cmd[s]) for s in cmd]
+        if len(caps) == 1:
+            side, other = node.other_arm()
+            if side is not None and other is None:
+                return f"lost the {side} arm's state"
+            if other is not None:
+                caps.append(other)
+        if len(caps) == 2:
+            d = clearance(*caps)
+            if d < args.min_arm_dist:
+                return f"arms {d * 100:.1f} cm apart (surface clearance)"
+        return None
+    return guard
+
+
+def start_home(node, args, log):
+    """After connecting, bring the real arms slowly (--park-vel-deg) to HOME_DEG, the teleop start pose; all 0
+    (straight up) is singular and hard to control. Any failure ends the session before the Quest drives anything."""
+    if node.ethernet is None or args.dry_run or args.no_start_home:
+        return
+    log.warning(f"[home] moving {', '.join(node.arms)} to the home pose {HOME_DEG} deg - Ctrl+C / Stop all stops them")
+    if not node.ethernet.park(np.deg2rad(HOME_DEG), np.deg2rad(args.park_vel_deg),
+                              log=lambda m: log.warning(m.replace("[park]", "[home]")), guard=make_guard(node, args)):
+        raise RobotError("the move to the home pose was stopped by the collision guard - move the arms apart by hand")
+
+
 def park_on_exit(node, args, log):
-    """Before a clean exit, bring the real arms slowly back to --park-deg (default: HOME_DEG).
+    """Before a clean exit, bring the real arms slowly back to --park-deg (default: all joints 0).
     Skipped on a dry run, with --no-park, or after a fault (stale feedback, e-stop, lost link): the arms
     then stay where they stopped. A second Ctrl+C / Stop all during the return stops the arms at once."""
     if node.ethernet is None or args.dry_run or args.no_park:
@@ -482,22 +515,11 @@ def park_on_exit(node, args, log):
     signal.signal(signal.SIGINT, signal.default_int_handler)  # rclpy's handler would swallow a second Ctrl+C
     signal.signal(signal.SIGTERM, signal.default_int_handler)
 
-    def guard(cmd):
-        caps = [node.arms[s].capsules(cmd[s]) for s in cmd]
-        if len(caps) == 1:
-            side, other = node.other_arm()
-            if other is None:
-                return f"lost the {side} arm's state - finish the return by hand"
-            if other is not None:
-                caps.append(other)
-        if len(caps) == 2:
-            d = clearance(*caps)
-            if d < args.min_arm_dist:
-                return f"arms {d * 100:.1f} cm apart (surface clearance) - finish the return by hand"
-        return None
+    guard = make_guard(node, args)
     try:
         node.ethernet.park(q_park, np.deg2rad(args.park_vel_deg),
-                           log=lambda m: log.warning(m), guard=guard)
+                           log=lambda m: log.warning(m + (" - finish the return by hand" if "stopped" in m else "")),
+                           guard=guard)
     except KeyboardInterrupt:
         log.error("[park] interrupted - arms stopped where they are")
     except Exception as exc:  # RobotError, socket errors, anything else: the arms are stopped by close()
@@ -507,7 +529,10 @@ def park_on_exit(node, args, log):
 def run_session(node, chain, args):
     log = node.get_logger()
     node.wait_ready()
-    if not args.no_home:
+    if node.ethernet:
+        start_home(node, args, log)
+        node.update_ethernet()
+    elif not args.no_home:
         if node.real and args.dry_run:
             log.info("dry run: skipping the move to the start pose")
         else:

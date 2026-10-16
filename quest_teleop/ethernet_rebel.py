@@ -51,6 +51,12 @@ def finite_floats(values, count):
     return q
 
 
+KINSTATE_TEXT = {0: "no error", 13: "joint limit min", 14: "joint limit max", 21: "centre singularity",
+                 22: "out of reach", 23: "wrist singularity", 24: "wrist singularity", 50: "NaN in joint position",
+                 99: "motion not allowed (motors off / hardware)",
+                 **{k: "virtual box limit" for k in range(30, 36)}}
+
+
 @dataclass(frozen=True)
 class Status:
     joints: tuple
@@ -65,7 +71,9 @@ class Status:
         if self.estop != 3:
             return f"ESTOP={self.estop} (expected 3)"
         if self.kinstate != 0 or any(self.joint_errors) or self.error.lower().replace("_", "") != "noerror":
-            return f"ERROR {self.error}, joint_errors={self.joint_errors}, KINSTATE={self.kinstate}"
+            kin = KINSTATE_TEXT.get(self.kinstate, "undocumented - likely a velocity / jump check of the stream"
+                                    if self.kinstate == 51 else "see the igus error table")
+            return f"ERROR {self.error}, joint_errors={self.joint_errors}, KINSTATE={self.kinstate} ({kin})"
         if self.opmode == 2:
             return "OPMODE=2 (motion forbidden)"
         return None
@@ -104,13 +112,15 @@ def load_endpoints(config=DEFAULT_CONFIG, left_ip=None, right_ip=None):
 class EthernetArm:
     def __init__(self, side, host, cri_port=3920, state_timeout=0.5, command_timeout=0.25,
                  max_joint_vel=0.35, max_track_error=math.radians(15), rate=30,
-                 engage_tolerance=math.radians(0.5)):
+                 engage_tolerance=math.radians(0.5), warmup_ticks=4):
         self.side, self.host, self.cri_port = side, host, cri_port
         self.state_timeout, self.command_timeout = state_timeout, command_timeout
         self.max_joint_vel, self.max_track_error, self.rate = max_joint_vel, max_track_error, rate
         # First target of a stream is checked against the live pose, which may have moved a little (encoder
         # noise, settling after release) since the caller's snapshot: allow this much extra, once.
         self.engage_tolerance = engage_tolerance
+        self.warmup_ticks = warmup_ticks
+        self.fresh = False
         self.cri = self.position = None
         self.status = None
         self.active = None
@@ -267,7 +277,9 @@ class EthernetArm:
             raise RobotError(f"{self.side}: CRI is passive; close the other driver / control client first")
         if self.program_state != 0:
             raise RobotError(f"{self.side}: a robot program is running; stop it first")
-        not_enabled_only = all(e in (0, 4) for e in status.joint_errors) and status.kinstate in (0, 99) \
+        # MNE (motors off) and a latched kinematic stop (e.g. KINSTATE 50/51 after a rejected target, 13/14 at a
+        # joint limit) are cleared by Reset + Enable; drive / encoder / current errors are not touched.
+        not_enabled_only = all(e in (0, 4) for e in status.joint_errors) and status.kinstate in (0, 13, 14, 50, 51, 99) \
             and status.error.lower().strip("_") in ("mne", "noerror", "no_error")
         if not not_enabled_only:
             raise RobotError(f"{self.side}: {status.problem()} is more than 'motor not enabled'; "
@@ -316,22 +328,49 @@ class EthernetArm:
         measured = self.position_joints
         if max(abs(x-y) for x, y in zip(q, measured)) > self.max_track_error:
             raise RobotError(f"{self.side}: excessive joint following error")
-        previous = self.last_target if self.moving else measured
-        # A delayed tick never grants a larger step. This also rejects jumps on engagement.
-        limit = self.max_joint_vel / self.rate + (0.0 if self.moving else self.engage_tolerance)
+        if not self.moving:
+            self.begin_stream()
+        previous = self.last_target
+        # A delayed tick never grants a larger step. This also rejects jumps on engagement; the first target
+        # of a stream may differ a little more (encoder noise between the caller's snapshot and now).
+        limit = self.max_joint_vel / self.rate + (self.engage_tolerance if self.fresh else 0.0)
         if max(abs(x-y) for x, y in zip(q, previous)) > limit + 1e-6:
             raise RobotError(f"{self.side}: target exceeds per-tick joint speed limit")
-        if not self.moving:
-            self.owns_position = True
-            with self._lock:
-                self._position(measured)  # seed the latest physical pose before selecting this source
-            self.command("UsePositionInterface true")
-            self.last_command = time.monotonic()
-            self.moving = True
+        self.fresh = False
         with self._lock:
             self.require_ready(position=True)
             self._position(q)
             self.last_target, self.last_command = q, time.monotonic()
+
+    def check_first_target(self, q):
+        """Validate the first target of a stream against the live pose BEFORE anything is sent."""
+        self.require_ready(position=True)
+        if len(q) != 6:
+            raise RobotError(f"{self.side}: exactly six joint targets are required")
+        q = finite_floats(q, 6)
+        step = max(abs(x - y) for x, y in zip(q, self.position_joints))
+        if step > self.max_track_error:
+            raise RobotError(f"{self.side}: excessive joint following error")
+        if step > self.max_joint_vel / self.rate + self.engage_tolerance + 1e-6:
+            raise RobotError(f"{self.side}: target exceeds per-tick joint speed limit")
+
+    def begin_stream(self):
+        """Seed the measured pose and select the Position Interface as the position source (the arm holds)."""
+        self.require_ready(position=True)
+        measured = self.position_joints
+        self.owns_position = True
+        with self._lock:
+            self._position(measured)
+        self.command("UsePositionInterface true")
+        with self._lock:
+            self.last_target, self.last_command, self.moving, self.fresh = measured, time.monotonic(), True, True
+
+    def resend(self):
+        """Repeat the last target (keeps the stream steady and the watchdog fed while another arm warms up)."""
+        with self._lock:
+            self.require_ready(position=True)
+            self._position(self.last_target)
+            self.last_command = time.monotonic()
 
     def hold(self):
         if self.owns_position:
@@ -460,6 +499,23 @@ class EthernetArms:
                 return
             for arm in self.arms.values():
                 arm.require_ready(position=True)
+            starting = [a for s, a in self.arms.items() if s in commands and not a.moving]
+            for arm in starting:
+                arm.check_first_target(commands[arm.side])
+            if starting:
+                # The robot interpolates over the AVERAGE interval between received targets. Right after the
+                # seed that interval is ~ms, so the first real target looked like a jump and the controller
+                # stopped the arm with a kinematic error (KINSTATE 51 seen on the right arm). Select the
+                # source, then re-send the held pose at the tick rate - every streaming arm together, so no
+                # arm's watchdog starves while another one warms up.
+                for arm in starting:
+                    arm.begin_stream()
+                rate = starting[0].rate
+                for _ in range(starting[0].warmup_ticks):
+                    time.sleep(1.0 / rate)
+                    for arm in self.arms.values():
+                        if arm.moving:
+                            arm.resend()
             for side, arm in self.arms.items():
                 if side in commands:
                     arm.target(commands[side])

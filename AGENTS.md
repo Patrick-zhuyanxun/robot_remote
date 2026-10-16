@@ -97,3 +97,10 @@
 - 實機錯誤：`right: unexpected Position Interface message: ['OK']`。RobotControl V15 的 Position Interface 對每個目標回 `MSGSTART OK MSGEND`（V1 文件未記載），舊程式視為未知訊息而讓兩臂故障停止，所以一握持就斷線、手臂沒動。修正：`OK` 略過；`ERROR …` 視為拒絕並停止；其他未知訊息忽略但記錄在 `unknown_position_messages`。假控制器現在預設對每個目標回 OK（更貼近實機），新增 2 項測試。
 - 注意：該次使用者同時選了左右兩臂，右臂也被 Reset + Enable（先前右臂由他人使用）。
 - 實機 RViz：teleop 發布 `/quest_teleop/joint_states`（兩臂量測關節；未驅動臂為假設／旁觀姿態）、`/quest_teleop/{side}/hand`（PoseStamped，frame `quest` = 操作者座標系）、`/quest_teleop/state`（JSON 握持狀態）。`teleop_viz.py --source real`：world = 左臂 base_link，右臂底座由手眼校正放置，控制器 TF `{side}/controller`，綠／白／紅球表示握持／放開／追蹤遺失。GUI Real 模式勾選「RViz: live arms + Quest controllers」（預設開）會在手臂連上後開啟，Stop all 時在回位後關閉。以兩台假控制器 + 實際 teleop + 無視窗 viz 驗證資料流（關節、TF、狀態）與 GUI 式關閉；42 項測試通過。未在實機與實際頭盔驗證畫面。
+
+## KINSTATE 51、串流暖機、啟動回 home（2026-10-16，Claude）
+
+- 實機（右臂）一握持即 `KINSTATE=51`（igus 文件未定義；50 = 關節位置 NaN）。推測原因：開始串流時先送種子姿態、幾毫秒後即送第一個目標，控制器以「平均間隔」內插，間隔約 ms 導致速度檢查觸發運動錯誤（Position Interface 文件：間隔短而目標遠 → kinematic error）。修正：`begin_stream()`（種子 + UsePositionInterface true）後，所有串流中的手臂一起以 tick 頻率重送目前姿態 4 次（`warmup_ticks`）再跟隨目標；第一個目標在送出任何東西前先驗證。尚未實機驗證此推測。
+- `enable_motors` 也會 Reset 鎖住的運動錯誤（KINSTATE 13/14/50/51/99，關節碼僅 0/4）；`problem()` 附上 KINSTATE 文字說明。
+- 使用者決定：Ethernet 連上後先以 10°/s 移到 home (0, 0, 65, 0, 50, 0)°（`start_home()`，同 park 的串流與兩臂 guard；`--no-start-home` 略過，GUI 勾選預設開），關閉時回全軸 0°（`--park-deg` 預設改回全 0）。44 項測試通過（含啟動姿態 = home、退出 = 0 的整合測試）。
+- 使用者問 sh 是否 source ROS：有（ros_env.sh、/opt/ros/humble、igus_ws），但 Ethernet 控制不經 ROS，KINSTATE 為控制器回報，與 ROS 無關。

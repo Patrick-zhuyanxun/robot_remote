@@ -34,7 +34,7 @@ DEFAULTS = {
     "record": True, "name": "dual_rebel_task", "task": "pick up the box",
     "root": os.environ.get("ROBOT_REMOTE_DATASETS", str(ROOT / "datasets")), "resolution": "640x480", "fps": 30, "yaw_deg": 0,
     "left_ip": ENDPOINTS["left"]["host"], "right_ip": ENDPOINTS["right"]["host"], "real_dry_run": True,
-    "real_park": True, "real_enable": True, "real_rviz": True,
+    "real_park": True, "real_enable": True, "real_rviz": True, "real_start_home": True,
 }
 C = {"bg": "#1f2329", "panel": "#2a2f37", "fg": "#e8e8e8", "dim": "#9aa3ad", "accent": "#4ea1ff",
      "ok": "#3fb950", "warn": "#d29922", "err": "#f85149", "rec": "#ff3b30"}
@@ -186,7 +186,10 @@ class App(tk.Tk):
         self.v_real_rviz = tk.BooleanVar(value=self.cfg["real_rviz"])
         ttk.Checkbutton(row, text="RViz: live arms + Quest controllers", variable=self.v_real_rviz).pack(side="left", padx=14)
         self.v_real_park = tk.BooleanVar(value=self.cfg["real_park"])
-        ttk.Checkbutton(row, text="Return both arms to the home pose (0, 0, 65, 0, 50, 0) deg before exit (10 deg/s)",
+        self.v_real_start_home = tk.BooleanVar(value=self.cfg["real_start_home"])
+        ttk.Checkbutton(row, text="Move to home (0, 0, 65, 0, 50, 0) deg after connecting",
+                        variable=self.v_real_start_home).pack(side="left", padx=14)
+        ttk.Checkbutton(row, text="Return to all joints 0 deg before exit (10 deg/s)",
                         variable=self.v_real_park).pack(side="left", padx=14)
         ttk.Label(self.real_box, text="Limits: 20 deg/s per joint, 0.15 m/s, 30 deg/s. CRI TCP 3920. "
                                       "Starts at the current pose; never homes on its own.",
@@ -355,7 +358,7 @@ class App(tk.Tk):
                "left_ip": self.v_real_ips["left"].get().strip(),
                "right_ip": self.v_real_ips["right"].get().strip(), "real_dry_run": self.v_real_dry.get(),
                "real_park": self.v_real_park.get(), "real_enable": self.v_real_enable.get(),
-               "real_rviz": self.v_real_rviz.get()}
+               "real_rviz": self.v_real_rviz.get(), "real_start_home": self.v_real_start_home.get()}
         if real:
             try:
                 for side in ("left", "right"):
@@ -386,9 +389,10 @@ class App(tk.Tk):
                 "- Other robot drivers / control clients are closed.\n"
                 + ("- Motors that report 'not enabled' are ENABLED now (Reset + Enable); the arms then hold.\n"
                    if cfg["real_enable"] else "- Motors are already enabled (iRC / robot controls).\n")
-                + "- The arms are in a bent working pose (not straight up).\n"
-                "- Arms start at their current poses. Real grippers are not controlled.\n"
-                + ("- On Stop all the arms move ON THEIR OWN back to the home pose (0, 0, 65, 0, 50, 0) deg, 10 deg/s.\n"
+                + "- The path between straight up and home is clear. Real grippers are not controlled.\n"
+                + ("- After connecting the arms move ON THEIR OWN to home (0, 0, 65, 0, 50, 0) deg, 10 deg/s.\n"
+                   if cfg["real_start_home"] else "- The arms start where they are (all 0 = straight up is hard to control).\n")
+                + ("- On Stop all the arms move ON THEIR OWN back to all joints 0 deg, 10 deg/s.\n"
                    "  Press Stop all again to stop them where they are.\n" if cfg["real_park"] else "")
                 + 
                 "\nEach arm only moves while you hold its GRIP. Continue?", icon="warning"):
@@ -477,6 +481,8 @@ class App(tk.Tk):
             cmd.append("--dry-run")
         if not cfg["real_park"]:
             cmd.append("--no-park")
+        if not cfg["real_start_home"]:
+            cmd.append("--no-start-home")
         if cfg["real_enable"] and not cfg["real_dry_run"]:
             cmd.append("--enable-motors")
         self._set("teleop", C["warn"], "connecting to selected arms over Ethernet TCP...")
@@ -542,7 +548,7 @@ class App(tk.Tk):
             self.events.put(("rec", "teleop", 0))
 
     def _on_line(self, name, line):
-        if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go", "RobotError", "[park]", "motors enabled", "watching the", "assumed to stay", "apart (surface", "guard blind",
+        if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go", "RobotError", "[park]", "[home]", "motors enabled", "watching the", "assumed to stay", "apart (surface", "guard blind",
                                                          "start pose", "dry run")):
             self._msg(f"[robot] {line.split(']: ')[-1]}")
         if name == "teleop":
@@ -621,10 +627,10 @@ class App(tk.Tk):
         if self.stage == "stopping":
             if parking and "teleop" in self.procs:  # second press: stop the arms where they are
                 self.procs["teleop"].interrupt()
-                self.rec_label.configure(text="Return to the home pose interrupted - arms stopped", bg=C["err"])
+                self.rec_label.configure(text="Return to 0 deg interrupted - arms stopped", bg=C["err"])
             return
         self.stage = "stopping"
-        self.rec_label.configure(text="Returning both arms to the home pose ...  press Stop all again to stop them now" if parking
+        self.rec_label.configure(text="Returning the arms to 0 deg ...  press Stop all again to stop them now" if parking
                                  else "Stopping... (saving any open episode, closing processes)", bg=C["warn"])
 
         def _stop():
@@ -649,7 +655,7 @@ class App(tk.Tk):
 
     def on_close(self):
         if self.stage == "stopping":  # closing the window now would be a second Stop all
-            if messagebox.askyesno("Stop the arms?", "The arms are still returning to the home pose.\n"
+            if messagebox.askyesno("Stop the arms?", "The arms are still returning to 0 deg.\n"
                                    "Stop them where they are and close?", icon="warning"):
                 self.stop_all()
             return
