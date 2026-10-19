@@ -124,7 +124,7 @@
 - 使用者回報：模擬遙控前段順、後段卡頓。檢查整條路徑 Quest → teleop → `/dual_arm/isaac_joint_commands` → Isaac → `/dual_arm/isaac_joint_states` → teleop。
 - 確認的堆積點 1（Isaac 命令端）：`ROS2SubscribeJointState` 每個 tick 只取佇列中一筆，預設 queueSize 10。模擬 FPS 低於 teleop 30 Hz 時命令排隊，手臂逐筆執行舊命令、落後最多 10 筆。實測（headless、連發 9 筆舊目標 + 1 筆新目標）：queueSize 10 時手臂先往舊目標偏 3.70°，改 1 後 0.00°。`run_dual_arm_sim.py` / `dual_arm_rig_ros2_bridge.py` 改為 queueSize 1。
 - 確認的堆積點 2（teleop 狀態端）：主迴圈每拍 `rclpy.spin_once` 只處理一個 callback，Isaac 每個渲染幀發布狀態，depth 10 佇列塞滿後每次取到的都是最舊的一筆，`q_meas`（握持快照、碰撞 guard、real-ros 落後檢查）落後約 10 筆。改為 depth 1（sim 與 real-ros 皆是）。回歸測試：舊設定落後 11 筆，新設定為最新。
-- 使用者未提交的 `dual_arm_rig_v2.usda`（2026-10-19 18:38 存檔）內含腳本建立的 `/World/DualArmJointBridge` 圖，下次啟動會報 "A graph already exists" 而失敗，且存進去的是舊的 queueSize。`run_dual_arm_sim.py` 載入後先移除此圖（及 CameraBridge）再重建，只改記憶體中的 stage，不改檔案；USD 檔本身未動。
+- 使用者 2026-10-19 18:38 存的 `dual_arm_rig_v2.usda`（桌子升高 0.2 m：桌腳 scale z 0.7→0.9、桌面 z +0.2）連帶存進了腳本建立的 `/World/DualArmJointBridge` 圖（舊 queueSize），會讓啟動報 "A graph already exists"。使用者決定採用此 USD：已移除檔內的圖再 commit，headless 載入驗證正常。`run_dual_arm_sim.py` 另在載入後移除任何存進 USD 的 bridge 圖再重建（只改記憶體），以免日後再次存檔又出錯。
 - 新增 `[timing]` 診斷（每 `--diag-period` 5 s 一行；異常時為 WARN，GUI 也顯示）：迴圈 Hz / overrun、Quest 讀取 / IK / 發布耗時 p95、joint state 頻率與年齡、模擬速度（sim 時間 ÷ 牆鐘）。判讀：loop < 27 Hz 或 ik 高 → teleop 本身忙；`sim < 90 % real time` 或 joint states Hz 下降 → Isaac 被 GPU/CPU 拖慢；age 高 → 狀態回授延遲。
 - 已排除：isaacteleop `ControllerTracker` 取當下快照，不是 FIFO；GUI 的 `_pump` 執行緒持續讀 teleop stdout，管線不會塞住（`Proc.lines` 會整場累積，只佔記憶體）。
 - 觀察：headless 模擬沒有限速（約 260 Hz、220 % 真實時間）；GUI 模式受渲染限制，實際數字未量。CPU governor 為 `powersave`（Isaac 啟動時也警告），可能讓模擬或 IK 後段變慢，尚未證實。
