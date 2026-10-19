@@ -146,3 +146,9 @@
 - 使用者實測的 `[timing]`（logs/teleop_20261019_193103.log）：teleop 迴圈 29.9 Hz、tick p50 約 1–2 ms、Quest 讀取 1.5 ms，皆正常；但 Isaac joint states 只有 **15 Hz**（GUI 渲染約 15 FPS），模擬速度從 65 % 降到 **35–40 % 真實時間**。卡頓主因在 Isaac 端（渲染 / CPU），不在 teleop。第二段下降約在 19:32:08，與 sim log 中使用者操作選單（開 Viewport）同時。GPU 當時未降頻；CPU governor 為 powersave；AnyDesk 在執行（遠端桌面擷取畫面也吃資源）。
 - RViz 模擬版：GUI 勾選「RViz (sim)」（預設開）或 `quest_teleop/run_teleop_viz.sh --source isaac`。實心手臂 = Isaac 實際姿態，半透明 = teleop 送出的命令（`/quest_teleop/action` → `/cmd_{side}/joint_states` + 兩個 robot_state_publisher），球 = Quest 控制器（綠 = 握持）。畫面上有延遲面板並每 5 s 寫入 viz log：Quest 端（手部姿態 Hz、逐位元相同的凍結幀 %、最長間隔）與手臂端（命令 Hz、手臂狀態 Hz、模擬速度、手臂落後命令的最大角度），並給出判斷。
 - 驗證：headless 模擬 + 假 teleop 發布：ghost 手臂 TF、控制器 TF、凍結偵測（凍結 2 s 時 83 %）、無狀態時提示；53 項測試通過。未在實際頭盔下看過 RViz 畫面。
+
+## 卡頓再查：不是 GPU，是 CPU 主執行緒（2026-10-19，Claude）
+
+- 使用者質疑顯存用量低。實測模擬執行中：GPU 35 %、P5、960 MHz、Isaac 顯存 1.5 GB → GPU 不是瓶頸；Isaac 主執行緒 CPU 87–100 % → 每秒約 98 幀，每幀只推進 1 個 physics step（1/120 s，由 `/clock` 量得 8.3 ms/幀），所以要 120 FPS 才是真實時間，量到 82 %；teleop / Viewport / RViz 同時跑時降到 35–65 %。
+- 更正：先前 `[timing]` 的「joint states 15 Hz」是 teleop 量測假象 —— 每拍一次 `spin_once` 只有隔拍處理到狀態。實際 Isaac 發布約 95 Hz。teleop 改為每拍 spin 3 次（假 100 Hz 發布實測 15.0 → 29.7 Hz），q_meas 也因此每拍更新。
+- teleop 雙手握持時 IK 區段 p95 達 40–60 ms 並 overrun；離線同樣的 IK 兩臂只要約 4 ms（在 Isaac 執行中量測 p95 4–10 ms）。live 尖峰原因未確定。teleop 的 2 條 OpenBLAS 執行緒在空轉（各約 62 s CPU，多為 sys）；設 `OPENBLAS_NUM_THREADS=1` 時 CPU 用量從 7.2 s 降到 1.2 s，但 IK p95 反而變差（9–10 ms 對 4–6 ms，推測與 powersave 下核心降頻有關），所以未採用。

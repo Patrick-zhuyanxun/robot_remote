@@ -715,7 +715,8 @@ def run_session(node, chain, args):
     try:
         while rclpy.ok() and not stop["requested"]:
             t0 = time.perf_counter()
-            rclpy.spin_once(node, timeout_sec=0.0)
+            for _ in range(3):  # one spin_once handled a joint state only every other tick (15 Hz); 3 -> every tick
+                rclpy.spin_once(node, timeout_sec=0.0)
             readings = xr.read_all()
             t_xr = time.perf_counter()
             node.update_ethernet()
