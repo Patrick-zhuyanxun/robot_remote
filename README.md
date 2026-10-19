@@ -49,7 +49,7 @@ mkdir -p ~/isaac-sim-6.1 && unzip -q ~/Downloads/isaac-sim-6.1.0.zip -d ~/isaac-
 2. On the Quest: open **Browser** → `https://nvidia.github.io/IsaacTeleop/client/v1.3.131/` →
    enter the **Server IP** shown in the GUI → tap the *accept cert* link and accept → back → **Connect**.
 3. Hold **Grip** to move an arm, **Trigger** closes its gripper, **A/X** starts / saves an episode,
-   **B/Y** discards it. **Stop all** in the GUI saves any open episode and shuts everything down.
+   **B** discards it, **Y** resets the scene (sim: arms home, box flaps closed; an open episode is discarded). **Stop all** in the GUI saves any open episode and shuts everything down.
    The run page's **Rotation: TOOL / BASE frame** button switches how hand rotation is applied
    (tool = about the tool's own axes, base = about the fixed arm-base axes; translation always follows the base axes).
    It takes effect when an arm is next gripped (`--rot-frame`, or topic `/quest_teleop/set_rot_frame` "tool"/"base").
@@ -82,7 +82,7 @@ Quest 3/3S ──Wi-Fi/WebRTC──► CloudXR runtime ─┐
                           quest_dual_arm_teleop.py  (py3.10 + rclpy, IK per arm)
                             │ /dual_arm/isaac_joint_commands  (joint targets, gripper carriages)
                             │ /quest_teleop/action            (14-D commanded action, every tick)
-                            │ /quest_teleop/events            ("toggle" / "discard" from A/X, B/Y)
+                            │ /quest_teleop/events            ("toggle" / "discard" / "reset" from A/X, B, Y)
                             ▼
               Isaac Sim 6.1 (run_dual_arm_sim.py, OmniGraph ROS 2 bridge)
                             │ /dual_arm/isaac_joint_states    (21 joints)

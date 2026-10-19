@@ -5,7 +5,8 @@ Inputs (ROS 2, read through Isaac Sim's bundled Python-3.12 rclpy - see run_reco
   /dual_arm/isaac_joint_states     -> observation.state (14): arm_{left,right}_joint1..6 + gripper closedness
   /quest_teleop/action             -> action            (14): same names, commanded by the teleop
   /dual_arm/{head,wrist_left,wrist_right}/rgb -> observation.images.{head,wrist_left,wrist_right}
-  /quest_teleop/events             <- Quest buttons: "toggle" (A/X: start / save), "discard" (B/Y)
+  /quest_teleop/events             <- Quest buttons: "toggle" (A/X: start / save), "discard" (B), "reset" (Y: scene reset,
+                                      discards an open episode)
   /clock                           -> sampling clock (sim time)
 
 Frames are sampled every 1/fps of SIM time (Isaac runs below real time, ~0.77x), so timestamps in the
@@ -167,7 +168,7 @@ def main():
     node = Recorder(args)
     ds, root = make_dataset(args)
     print(f"[rec] {len(NAMES)}-D state/action: {NAMES}", flush=True)
-    print("[rec] controls: Quest A/X = start / save episode, B/Y = discard | keyboard: Enter = start/save, "
+    print("[rec] controls: Quest A/X = start / save episode, B = discard, Y = reset scene | keyboard: Enter = start/save, "
           "d = discard, q = quit", flush=True)
     threading.Thread(target=keyboard_thread, args=(node.events,), daemon=True).start()
 
@@ -201,6 +202,13 @@ def main():
                           f"{n_frames / args.fps:.1f}s sim, {n_stale} frames had a stale stream) ...", flush=True)
                     ds.save_episode(parallel_encoding=False)  # process-pool encoding deadlocks next to rclpy threads (fork)
                     print(f"[rec] ■ saved. total episodes: {ds.meta.total_episodes}", flush=True)
+                elif ev == "reset":
+                    if recording:
+                        recording = False
+                        ds.clear_episode_buffer()
+                        print(f"[rec] ✕ discarded ({n_frames} frames) - scene reset", flush=True)
+                    else:
+                        print("[rec] scene reset (no open episode)", flush=True)
                 elif ev == "discard" and recording:
                     recording = False
                     ds.clear_episode_buffer()

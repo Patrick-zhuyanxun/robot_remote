@@ -481,13 +481,15 @@ class App(tk.Tk):
         btns = ttk.Frame(left)
         btns.pack(fill="x", pady=6)
         self.b_toggle = ttk.Button(btns, text="● Start / Save  (= A/X)", command=lambda: self._rec_cmd(""))
-        self.b_discard = ttk.Button(btns, text="✕ Discard  (= B/Y)", command=lambda: self._rec_cmd("d"))
+        self.b_discard = ttk.Button(btns, text="✕ Discard  (= B)", command=lambda: self._rec_cmd("d"))
         if cfg["record"]:
             self.b_toggle.pack(side="left", padx=(0, 8))
             self.b_discard.pack(side="left", padx=(0, 8))
         # live switch of the rotation frame; enabled once the teleop reports its frame (it applies at the next grip)
         self.b_frame = ttk.Button(btns, text=FRAME_TEXT[cfg["rot_frame"]], command=self._toggle_frame, state="disabled")
         self.b_frame.pack(side="left", padx=(0, 8))
+        if cfg["target"] != "real":  # sim only: arms home + box flaps closed (an open episode is discarded)
+            ttk.Button(btns, text="⟲ Reset scene  (= Y)", command=self._reset_scene).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="■ Stop all", command=self.stop_all).pack(side="right")
         ttk.Button(btns, text="? Manual", command=open_manual).pack(side="right")
         ttk.Button(btns, text="Open log folder", command=lambda: subprocess.Popen(["xdg-open", str(LOG_DIR)])).pack(side="right", padx=8)
@@ -623,7 +625,7 @@ class App(tk.Tk):
                                                          "still report", "Hardware error")):
             self._msg(f"[driver] {line.split(']: ')[-1][:200]}")
         if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go", "RobotError", "[park]", "[home]", "motors enabled", "watching the", "assumed to stay", "apart (surface", "guard blind",
-                                                         "start pose", "dry run")):
+                                                         "start pose", "dry run", "[reset]")):
             self._msg(f"[robot] {line.split(']: ')[-1]}")
         if name == "teleop" and (m := re.search(r"rotation frame: (tool|base)\b", line)):
             self.events.put(("frame", m.group(1)))
@@ -670,6 +672,14 @@ class App(tk.Tk):
         except (OSError, ValueError):
             pass
 
+    def _reset_scene(self):
+        p = self.procs.get("teleop")
+        if p is not None and p.alive():
+            try:
+                p.send("reset_scene")
+            except OSError:  # the teleop just exited
+                pass
+
     def _rec_cmd(self, c):
         if "record" in self.procs:
             self.procs["record"].send(c)
@@ -698,7 +708,7 @@ class App(tk.Tk):
 
     def _rec_state(self, state, data):
         if state == "recording":
-            self.rec_label.configure(text="● RECORDING   A/X = save,  B/Y = discard", bg=C["rec"])
+            self.rec_label.configure(text="● RECORDING   A/X = save,  B = discard,  Y = reset scene (discards)", bg=C["rec"])
             self._set("record", C["rec"], "recording")
         elif state == "frames":
             n, sec, stale = data

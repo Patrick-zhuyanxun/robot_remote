@@ -37,7 +37,7 @@ from geometry_msgs.msg import PoseStamped
 from builtin_interfaces.msg import Duration
 from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import JointState
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from quest_arm_teleop import ARM_JOINTS, HOME_DEG, TCP_PRESETS, QuestController, SerialChain, step_toward
@@ -243,6 +243,9 @@ class DualArmTeleop(Node):
         # or `ros2 topic pub --once /quest_teleop/set_rot_frame std_msgs/String "data: base"`
         self.rot_frame = args.rot_frame
         self.create_subscription(String, "/quest_teleop/set_rot_frame", lambda m: self.set_rot_frame(m.data), 10)
+        # scene reset (left controller Y, GUI button / stdin "reset_scene"): sim only, see reset_scene()
+        self.reset_requested = False
+        self.scene_reset_pub = None if self.real else self.create_publisher(Empty, "/dual_arm/reset_scene", 1)
         self.all_q = {s: None for s in SIDES}       # measured arm joints of BOTH arms (driven or not)
         self.all_grip = {s: 0.0 for s in SIDES}     # measured gripper closedness [0, 1]
         if not self.real:
@@ -263,13 +266,15 @@ class DualArmTeleop(Node):
             if held else ""))
 
     def read_commands(self, stream):
-        """Command lines from the launcher (stdin pipe): `rot_frame tool|base`. Ends at EOF."""
+        """Command lines from the launcher (stdin pipe): `rot_frame tool|base`, `reset_scene`. Ends at EOF."""
         for line in iter(stream.readline, ""):
             words = line.split()
             if len(words) == 2 and words[0] == "rot_frame":
                 self.set_rot_frame(words[1])
+            elif words == ["reset_scene"]:
+                self.reset_requested = True
             elif words:
-                self.get_logger().warning(f"unknown command {line.strip()!r} (expected: rot_frame tool|base)")
+                self.get_logger().warning(f"unknown command {line.strip()!r} (expected: rot_frame tool|base, reset_scene)")
 
     def _on_real_js(self, side, msg):
         self.stats.on_state(msg)
@@ -628,6 +633,28 @@ def make_guard(node, args):
     return guard
 
 
+def reset_scene(node, args, log):
+    """Left controller Y (or the GUI button): start the next recording without stopping anything. Sim only: both
+    arms are released and driven back to HOME_DEG, the grippers open, then the simulator closes the box flaps
+    (/dual_arm/reset_scene). The recorder discards an episode that is still open ("reset" event). Real arms are
+    never moved by a button press."""
+    if node.real:
+        log.warning("[reset] scene reset is simulator only - the real arms are not moved by a button")
+        return
+    node.event_pub.publish(String(data="reset"))  # record_dataset.py: discard the open episode, if any
+    for arm in node.arms.values():
+        arm.engaged = False
+        arm.last_trig = None
+    log.warning("[reset] scene reset: arms -> home, grippers open, box flaps closed")
+    node.send({}, {s: args.gripper_open for s in node.arms})
+    node.go_home(vel=0.4)
+    node.scene_reset_pub.publish(Empty())  # after the arms are clear of the box
+    node.spin_for(0.3)
+    for arm in node.arms.values():
+        arm.q_cmd = arm.q_meas.copy()
+    log.info("[reset] done - grip to drive the arms again")
+
+
 def start_home(node, args, log):
     """After connecting, bring the real arms slowly (--park-vel-deg) to HOME_DEG, the teleop start pose; all 0
     (straight up) is singular and hard to control. Any failure ends the session before the Quest drives anything."""
@@ -887,14 +914,21 @@ def run_session(node, chain, args):
             node.send(cand, grips)
             node.publish_action()
             node.publish_viz(readings, hand_of)
-            # episode events: A/X = start/save (toggle), B/Y = discard; rising edges, either hand
+            # controller buttons (rising edges): A/X = start/save (toggle), B = discard, Y (left) = reset the scene
             for h, (prim, sec) in xr.buttons.items():
                 was_p, was_s = last_buttons.get(h, (False, False))
-                for pressed, was, ev in ((prim, was_p, "toggle"), (sec, was_s, "discard")):
+                for pressed, was, ev in ((prim, was_p, "toggle"), (sec, was_s, "reset" if h == "left" else "discard")):
                     if pressed and not was:
-                        node.event_pub.publish(String(data=ev))
                         log.info(f"[{h} hand] button -> {ev}")
+                        if ev == "reset":
+                            node.reset_requested = True
+                        else:
+                            node.event_pub.publish(String(data=ev))
                 last_buttons[h] = (prim, sec)
+            if node.reset_requested:
+                node.reset_requested = False
+                reset_scene(node, args, log)
+                continue
             t_pub = time.perf_counter()
 
             if not args.quiet:

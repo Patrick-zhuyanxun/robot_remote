@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "quest_teleop"))
 try:
     import numpy as np
     import rclpy
+    import rclpy.executors
     import quest_dual_arm_teleop as teleop
 except ImportError:
     teleop = None
@@ -504,6 +505,77 @@ class NodeIntegrationTests(unittest.TestCase):
                 teleop.log_timing(node.get_logger(), "[timing] test", bad)
         finally:
             node.destroy_node()
+            rclpy.try_shutdown()
+
+    def test_y_button_resets_the_sim_scene(self):
+        """Left Y while an arm is gripped: 'reset' event, arm released and back at HOME_DEG, then /dual_arm/reset_scene."""
+        import threading
+        from sensor_msgs.msg import JointState
+        from std_msgs.msg import Empty, String
+        rclpy.init()
+        node = fake = None
+        try:
+            args, _ = teleop.parse_args(["--quiet", "--no-home", "--arms", "left"])
+            chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
+                                       tcp_xyz=teleop.TCP_PRESETS["flange"])
+            node = teleop.DualArmTeleop(args, chain)
+            fake = rclpy.create_node("fake_isaac")
+            names = [f"arm_{s}_{j}" for s in teleop.SIDES for j in teleop.ARM_JOINTS]
+            q = {n: v for n, v in zip(names, np.deg2rad([0, 20, 70, 0, 40, 0] * 2))}  # not at home
+            events, resets = [], []
+            fake.create_subscription(JointState, "/dual_arm/isaac_joint_commands",
+                                     lambda m: q.update({n: v for n, v in zip(m.name, m.position) if n in q}), 50)
+            fake.create_subscription(String, "/quest_teleop/events", lambda m: events.append(m.data), 10)
+            fake.create_subscription(Empty, "/dual_arm/reset_scene", lambda m: resets.append(1), 10)
+            pub = fake.create_publisher(JointState, "/dual_arm/isaac_joint_states", 10)
+            stop = []
+
+            ex = rclpy.executors.SingleThreadedExecutor()  # own executor: the teleop spins the global one
+            ex.add_node(fake)
+
+            def isaac():
+                while not stop:
+                    ex.spin_once(timeout_sec=0.0)
+                    pub.publish(JointState(name=names, position=[q[n] for n in names]))
+                    time.sleep(0.005)
+            threading.Thread(target=isaac, daemon=True).start()
+            seen = {}
+
+            class YQuest:
+                tick = 0
+                buttons = {"left": (False, False)}
+
+                def __init__(self, *unused):
+                    pass
+
+                def read_all(self):
+                    self.tick += 1
+                    i = self.tick
+                    if i == 3:
+                        seen["engaged_before"] = node.arms["left"].engaged
+                    self.buttons = {"left": (False, i == 4)}  # Y pressed at tick 4
+                    if i == 8:
+                        seen["engaged_after"] = node.arms["left"].engaged
+                        seen["q"] = node.arms["left"].q_meas.copy()
+                        raise KeyboardInterrupt
+                    return {"left": (True, np.zeros(3), np.array([0, 0, 0, 1.0]), 1.0 if i < 4 else 0.0, 0.0)}
+
+                def close(self):
+                    pass
+
+            with patch.object(teleop, "QuestController", return_value=YQuest()):
+                teleop.run_session(node, chain, args)
+            time.sleep(0.2)
+            stop.append(1)
+            self.assertTrue(seen["engaged_before"])
+            self.assertFalse(seen["engaged_after"])
+            self.assertIn("reset", events)
+            self.assertEqual(len(resets), 1)
+            np.testing.assert_allclose(np.rad2deg(seen["q"]), teleop.HOME_DEG, atol=1.0)
+        finally:
+            for n in (node, fake):
+                if n:
+                    n.destroy_node()
             rclpy.try_shutdown()
 
     def test_park_skipped_without_ethernet_link(self):
