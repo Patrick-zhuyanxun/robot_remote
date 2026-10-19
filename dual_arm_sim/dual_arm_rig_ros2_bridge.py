@@ -299,6 +299,7 @@ def build_bridge():
                 ("PublishJointState.inputs:targetPrim", [articulation_root]),
                 ("PublishJointState.inputs:topicName", JOINT_STATES_TOPIC),
                 ("SubscribeJointState.inputs:topicName", JOINT_COMMANDS_TOPIC),
+                ("SubscribeJointState.inputs:queueSize", 1),  # newest command only (no backlog at low FPS)
                 ("ArticulationController.inputs:targetPrim", [articulation_root]),
                 ("ArticulationController.inputs:robotPath", articulation_root),
                 ("RgbRenderProduct.inputs:cameraPrim", [rgb_camera_prim]),

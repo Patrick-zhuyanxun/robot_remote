@@ -586,7 +586,8 @@ class App(tk.Tk):
                 self._set("teleop", C["ok"], "Quest connected, controllers tracked")
             elif "tracking LOST" in line:
                 self._set("teleop", C["warn"], "controller tracking lost (keep it in front of the headset)")
-            if any(k in line for k in ("engaged", "released", "button", "TRACKED", "LOST", "apart", "Error", "Traceback")):
+            if any(k in line for k in ("engaged", "released", "button", "TRACKED", "LOST", "apart", "Error", "Traceback")) \
+                    or ("[timing]" in line and "WARN" in line):  # loop / sim too slow (see logs/teleop_*.log)
                 self._msg(f"[teleop] {line.split(']: ')[-1]}")
         elif name == "record":
             if "RECORDING" in line:

@@ -67,6 +67,12 @@ while omni.usd.get_context().get_stage_loading_status()[2] > 0:
 stage = omni.usd.get_context().get_stage()
 root = next(p.GetPath().pathString for p in stage.Traverse() if p.HasAPI(UsdPhysics.ArticulationRootAPI))
 print(f"[dual_arm] Isaac Sim {ISAAC_VERSION}: opened {USD.name}, articulation root {root}")
+# A stage saved from a running sim (File > Save) also stores the graphs built below; Controller.edit then fails
+# ("A graph already exists") and the saved copy would keep its old settings. Rebuild them (in memory only).
+for graph in ("/World/DualArmJointBridge", "/World/DualArmCameraBridge"):
+    if stage.GetPrimAtPath(graph).IsValid():
+        stage.RemovePrim(graph)
+        print(f"[dual_arm] removed the {graph} graph saved in {USD.name}; rebuilding it")
 
 sim = SimulationContext(physics_dt=1 / 120, rendering_dt=1 / 60, stage_units_in_meters=1.0)
 sim.initialize_physics()
@@ -95,6 +101,9 @@ else:
             ],
             keys.SET_VALUES: [
                 ("sub.inputs:topicName", CMD_TOPIC),
+                # The node takes one queued message per tick. With the default depth 10, a render rate under the
+                # teleop's 30 Hz piles commands up and the arms trail the hand by up to 10 commands; keep the newest.
+                ("sub.inputs:queueSize", 1),
                 ("ctrl.inputs:robotPath", root),
                 ("pub.inputs:topicName", STATE_TOPIC),
                 ("pub.inputs:targetPrim", root),

@@ -2,6 +2,7 @@
 import io
 from pathlib import Path
 import sys
+import time
 import unittest
 from unittest.mock import patch
 
@@ -445,6 +446,55 @@ class NodeIntegrationTests(unittest.TestCase):
                 node.destroy_node()
             rclpy.try_shutdown()
             left.close()
+
+    def test_sim_joint_state_is_the_newest_with_one_spin_per_tick(self):
+        """Isaac publishes ~60 Hz, the loop takes one callback per 30 Hz tick: q_meas must not trail a queue."""
+        from sensor_msgs.msg import JointState
+        rclpy.init()
+        node = pub_node = None
+        try:
+            args, _ = teleop.parse_args(["--quiet"])
+            chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
+                                       tcp_xyz=teleop.TCP_PRESETS["flange"])
+            node = teleop.DualArmTeleop(args, chain)
+            pub_node = rclpy.create_node("fake_isaac_states")
+            pub = pub_node.create_publisher(JointState, "/dual_arm/isaac_joint_states", 10)
+            names = [f"arm_{s}_{j}" for s in teleop.SIDES for j in teleop.ARM_JOINTS]
+            k = 0
+            for _ in range(40):
+                for _ in range(2):  # two states per teleop tick
+                    k += 1
+                    pub.publish(JointState(name=names, position=[k * 1e-3] * 12))
+                time.sleep(0.02)
+                rclpy.spin_once(node, timeout_sec=0.0)
+            self.assertGreaterEqual(node.arms["left"].q_meas[0], (k - 2) * 1e-3 - 1e-9)  # was ~10 states behind
+            self.assertGreater(node.stats.js_n, 0)
+        finally:
+            for n in (node, pub_node):
+                if n:
+                    n.destroy_node()
+            rclpy.try_shutdown()
+
+    def test_isaac_command_subscriber_keeps_only_the_newest(self):
+        src = (Path(__file__).resolve().parents[1] / "dual_arm_sim/run_dual_arm_sim.py").read_text()
+        self.assertIn('("sub.inputs:queueSize", 1)', src)
+
+    def test_loop_stats_flags_a_slow_loop_and_slow_sim(self):
+        from builtin_interfaces.msg import Time
+        from sensor_msgs.msg import JointState
+        from std_msgs.msg import Header
+        st = teleop.LoopStats(30.0, 1.0)
+        t0 = st.t_start
+        st.on_state(JointState(header=Header(stamp=Time(sec=10))))
+        st.reset(t0)
+        for _ in range(15):  # 15 Hz loop over 1 s
+            st.tick({"tick": .05, "xr": .01, "ik": .03, "pub": .001}, .02)
+        st.on_state(JointState(header=Header(stamp=Time(sec=10, nanosec=500_000_000))))
+        self.assertIsNone(st.report(t0 + .5))
+        line, bad = st.report(t0 + 1.0)
+        self.assertTrue(bad)
+        self.assertIn("15 overruns", line)
+        self.assertIn("sim  50 % real time", line)
 
     def test_park_skipped_without_ethernet_link(self):
         args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--dry-run"])

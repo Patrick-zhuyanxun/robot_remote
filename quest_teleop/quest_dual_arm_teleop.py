@@ -35,7 +35,7 @@ from rclpy.node import Node
 from scipy.spatial.transform import Rotation
 from geometry_msgs.msg import PoseStamped
 from builtin_interfaces.msg import Duration
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, qos_profile_sensor_data
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
@@ -47,6 +47,13 @@ from arm_collision import DEFAULT_CALIBRATION, capsules, clearance, load_world_T
 HERE = Path(__file__).resolve().parent
 SIDES = ("left", "right")
 
+# Joint-state subscriptions keep only the newest message. The loop handles ONE ready callback per 30 Hz tick
+# (rclpy.spin_once) while Isaac publishes every render frame (~60 Hz): with a depth-10 queue each take returned
+# the oldest of ten queued states, so q_meas (engage snapshot, guard, lag check) ran ~0.15-0.3 s behind.
+LATEST = QoSProfile(depth=1)
+LATEST_SENSOR = QoSProfile(depth=1, reliability=qos_profile_sensor_data.reliability,
+                           durability=qos_profile_sensor_data.durability)
+
 # Arm base poses in the rig/world frame, from dual_arm_rig_v2.usda (sliders and lift at 0).
 ARM_BASE_XYZ = {"left": (0.228209, -0.179297, 1.1093), "right": (-0.231737, -0.179297, 1.1093)}
 ARM_BASE_YAW_DEG = -90.0
@@ -56,6 +63,59 @@ REAL_DEFAULTS = {"max_joint_vel": 0.35, "max_lin_vel": 0.15, "max_rot_vel": 30.0
 SIM_DEFAULTS = {"max_joint_vel": 0.785, "max_lin_vel": 0.50, "max_rot_vel": 90.0}
 
 # OpenXR anchor frame is set by quest_arm_teleop.OPERATOR_T_ANCHOR: operator X fwd, Y left, Z up.
+
+
+class LoopStats:
+    """Timing report every --diag-period s: loop rate and overruns, time spent in the Quest read / IK + guard /
+    publishing, age of the newest joint state, how often joint states arrive and, in the sim, how fast sim time
+    runs against the wall clock. Tells a slow loop (this process) apart from a slow simulator (GPU / CPU)."""
+
+    def __init__(self, rate, period):
+        self.rate, self.period = rate, period
+        self.reset(time.perf_counter())
+        self.js_n, self.js_stamp = 0, None   # joint-state messages counted / sim stamp, written by the callbacks
+
+    def reset(self, now):
+        self.t_start = now
+        self.ticks, self.overruns = 0, 0
+        self.parts = {"tick": [], "xr": [], "ik": [], "pub": []}
+        self.age = []
+        self.js_n0, self.js_stamp0 = getattr(self, "js_n", 0), getattr(self, "js_stamp", None)
+
+    def on_state(self, msg):
+        self.js_n += 1
+        st = msg.header.stamp
+        if st.sec or st.nanosec:
+            self.js_stamp = st.sec + st.nanosec * 1e-9
+
+    def tick(self, parts, age):
+        self.ticks += 1
+        self.overruns += parts["tick"] > 1.0 / self.rate
+        for k, v in parts.items():
+            self.parts[k].append(v * 1e3)
+        if age is not None:
+            self.age.append(age * 1e3)
+
+    def report(self, now):
+        """One summary line (and whether it looks unhealthy) once per period, else None."""
+        wall = now - self.t_start
+        if wall < self.period or not self.ticks:
+            return None
+        def pct(v, q):
+            return float(np.percentile(v, q)) if v else float("nan")
+        js_hz = (self.js_n - self.js_n0) / wall
+        rtf = None
+        if self.js_stamp is not None and self.js_stamp0 is not None:
+            rtf = (self.js_stamp - self.js_stamp0) / wall
+        line = (f"[timing] loop {self.ticks / wall:4.1f} Hz (target {self.rate:.0f}), {self.overruns} overruns | "
+                f"tick p50 {pct(self.parts['tick'], 50):4.1f} max {max(self.parts['tick']):5.1f} ms | "
+                f"quest {pct(self.parts['xr'], 95):4.1f} ik {pct(self.parts['ik'], 95):4.1f} "
+                f"pub {pct(self.parts['pub'], 95):4.1f} ms p95 | joint states {js_hz:4.1f} Hz, "
+                f"age p95 {pct(self.age, 95):5.0f} ms" + (f" | sim {rtf * 100:3.0f} % real time" if rtf is not None else ""))
+        bad = (self.ticks / wall < 0.9 * self.rate or (rtf is not None and rtf < 0.9)
+               or pct(self.age, 95) > 3e3 / self.rate)
+        self.reset(now)
+        return line, bad
 
 
 def tool_from_controller(r_tool: Rotation, twist_axis_ctrl, right_ctrl, right_base) -> Rotation:
@@ -126,6 +186,7 @@ class DualArmTeleop(Node):
         super().__init__("quest_dual_arm_teleop")
         self.args = args
         self.arms = {s: Arm(s, chain, args) for s in args.arms}
+        self.stats = LoopStats(args.rate, args.diag_period)
         # Real arms: place the bases from the hand-eye calibrations (world = camera_link); sim: USD poses.
         self.base_poses = {}
         if args.backend != "isaac":
@@ -151,7 +212,7 @@ class DualArmTeleop(Node):
                              for s in self.arms}
             for s in self.arms:
                 self.create_subscription(JointState, args.real_state_topic.format(side=s),
-                                         lambda m, s=s: self._on_real_js(s, m), qos_profile_sensor_data)
+                                         lambda m, s=s: self._on_real_js(s, m), LATEST_SENSOR)
         else:
             self.cmd_pub = self.create_publisher(JointState, "/dual_arm/isaac_joint_commands", 10)
         # for teleop_viz / RViz: where each arm's TCP is being asked to go (frame <side>/base_link)
@@ -171,7 +232,7 @@ class DualArmTeleop(Node):
         self.all_q = {s: None for s in SIDES}       # measured arm joints of BOTH arms (driven or not)
         self.all_grip = {s: 0.0 for s in SIDES}     # measured gripper closedness [0, 1]
         if not self.real:
-            self.create_subscription(JointState, "/dual_arm/isaac_joint_states", self._on_js, 10)
+            self.create_subscription(JointState, "/dual_arm/isaac_joint_states", self._on_js, LATEST)
 
     def set_rot_frame(self, mode):
         """Switch the rotation frame. An arm that is engaged keeps its frame until it is released and gripped
@@ -197,6 +258,7 @@ class DualArmTeleop(Node):
                 self.get_logger().warning(f"unknown command {line.strip()!r} (expected: rot_frame tool|base)")
 
     def _on_real_js(self, side, msg):
+        self.stats.on_state(msg)
         d = dict(zip(msg.name, msg.position))
         if all(j in d for j in ARM_JOINTS):
             q = np.array([d[j] for j in ARM_JOINTS])
@@ -204,6 +266,7 @@ class DualArmTeleop(Node):
             self.all_q[side] = q
 
     def _on_js(self, msg):
+        self.stats.on_state(msg)
         d = dict(zip(msg.name, msg.position))
         for s in SIDES:
             names = [f"arm_{s}_{j}" for j in ARM_JOINTS]
@@ -484,6 +547,8 @@ def parse_args(argv=None):
     p.add_argument("--gripper-closed", type=float, default=-0.0116631, help="carriage pos at trigger 1 [m]")
     p.add_argument("--no-home", action="store_true")
     p.add_argument("--quiet", action="store_true", help="no per-0.5 s axis-check log while engaged")
+    p.add_argument("--diag-period", type=float, default=5.0,
+                   help="seconds between [timing] lines (loop rate, Quest / IK time, joint-state age, sim speed)")
     args, ros_args = p.parse_known_args(argv)
     for k, v in (REAL_DEFAULTS if args.backend != "isaac" else SIM_DEFAULTS).items():
         if getattr(args, k) is None:
@@ -492,7 +557,7 @@ def parse_args(argv=None):
         p.error("--arms must not contain duplicates")
     for key in ("rate", "state_timeout", "command_timeout", "max_joint_vel", "max_lin_vel", "max_rot_vel",
                 "max_track_err_deg", "max_lead_deg", "max_lead_m", "max_reach", "scale", "min_arm_dist", "park_vel_deg",
-                "arm_radius", "tool_radius"):
+                "arm_radius", "tool_radius", "diag_period"):
         if not np.isfinite(getattr(args, key)) or getattr(args, key) <= 0:
             p.error(f"--{key.replace('_', '-')} must be finite and positive")
     if args.backend != "isaac":
@@ -652,6 +717,7 @@ def run_session(node, chain, args):
             t0 = time.perf_counter()
             rclpy.spin_once(node, timeout_sec=0.0)
             readings = xr.read_all()
+            t_xr = time.perf_counter()
             node.update_ethernet()
             cand, grips = {}, {}
             for side, arm in node.arms.items():
@@ -787,6 +853,7 @@ def run_session(node, chain, args):
                     for arm in node.arms.values():
                         arm.engaged, arm.need_regrip = False, True
 
+            t_ik = time.perf_counter()
             for side, q in cand.items():
                 node.arms[side].q_cmd = q
             if node.ethernet:
@@ -808,6 +875,7 @@ def run_session(node, chain, args):
                         node.event_pub.publish(String(data=ev))
                         log.info(f"[{h} hand] button -> {ev}")
                 last_buttons[h] = (prim, sec)
+            t_pub = time.perf_counter()
 
             if not args.quiet:
                 for side, arm in node.arms.items():
@@ -835,6 +903,11 @@ def run_session(node, chain, args):
                         meas_rot = r_meas * arm.home_r.inv()
                         log.info(f"[{side}] ROT hand(op x fwd,y left,z up) {rv(hand_rot_op)} | cmd(base, rate-limited) {rv(arm.cmd_r * arm.home_r.inv())}"
                                  f" | actual(base) {rv(meas_rot)} | raw quat xyzw {np.round(arm.raw_quat, 3)}")
+            t_end = time.perf_counter()
+            node.stats.tick({"tick": t_end - t0, "xr": t_xr - t0, "ik": t_ik - t_xr, "pub": t_pub - t_ik},
+                            time.monotonic() - min(a.t_meas for a in node.arms.values()))
+            if rep := node.stats.report(t_end):
+                (log.warning if rep[1] else log.info)(rep[0])
             time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
     except KeyboardInterrupt:
         pass
