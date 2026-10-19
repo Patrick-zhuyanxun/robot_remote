@@ -23,7 +23,7 @@ Visualization Manager:
       Description Topic:
         Value: /left/robot_description
       TF Prefix: left
-      Alpha: 0.6
+      Alpha: 1
       Visual Enabled: true
       Collision Enabled: false
     - Class: rviz_default_plugins/RobotModel
@@ -33,7 +33,27 @@ Visualization Manager:
       Description Topic:
         Value: /right/robot_description
       TF Prefix: right
-      Alpha: 0.6
+      Alpha: 1
+      Visual Enabled: true
+      Collision Enabled: false
+    - Class: rviz_default_plugins/RobotModel
+      Name: LEFT command (teleop, ghost)
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /cmd_left/robot_description
+      TF Prefix: cmd_left
+      Alpha: 0.25
+      Visual Enabled: true
+      Collision Enabled: false
+    - Class: rviz_default_plugins/RobotModel
+      Name: RIGHT command (teleop, ghost)
+      Enabled: true
+      Description Source: Topic
+      Description Topic:
+        Value: /cmd_right/robot_description
+      TF Prefix: cmd_right
+      Alpha: 0.25
       Visual Enabled: true
       Collision Enabled: false
     - Class: rviz_default_plugins/Axes
@@ -79,19 +99,19 @@ Visualization Manager:
       Length: 0.10
       Radius: 0.003
     - Class: rviz_default_plugins/Axes
-      Name: left Quest controller (real)
+      Name: left Quest controller
       Enabled: true
       Reference Frame: left/controller
       Length: 0.08
       Radius: 0.006
     - Class: rviz_default_plugins/Axes
-      Name: right Quest controller (real)
+      Name: right Quest controller
       Enabled: true
       Reference Frame: right/controller
       Length: 0.08
       Radius: 0.006
     - Class: rviz_default_plugins/Axes
-      Name: Quest operator frame (real)
+      Name: Quest operator frame
       Enabled: true
       Reference Frame: quest
       Length: 0.2

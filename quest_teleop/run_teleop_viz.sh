@@ -18,7 +18,7 @@ pids=()
 cleanup() { kill "${pids[@]}" 2>/dev/null || true; wait 2>/dev/null || true; rm -f "$PARAMS"; }
 trap cleanup EXIT INT TERM
 
-for side in left right; do
+for side in left right cmd_left cmd_right; do  # cmd_* = translucent teleop command arms
   ros2 run robot_state_publisher robot_state_publisher --ros-args -r __ns:=/$side \
     --params-file "$PARAMS" -p frame_prefix:="$side/" &
   pids+=($!)

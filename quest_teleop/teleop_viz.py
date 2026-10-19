@@ -2,6 +2,14 @@
 """RViz view of the Quest teleop (read-only, sends no commands): the Isaac rig (--source isaac, default) or the
 physical arms driven over Ethernet (--source real).
 
+Both sources also show, to tell a slow simulator from a laggy Quest link:
+  * the Quest controllers (spheres, as the teleop reads them; green = grip drives the arm),
+  * a translucent "command" arm per side = what the teleop sends (/quest_teleop/action),
+  * a lag panel: hand rate / frozen hand frames / longest gap (Quest + Wi-Fi side), command rate, arm state rate and
+    sim speed (Isaac side), and how far each arm trails its command. Also logged every 5 s.
+  Solid arm trails a smooth ghost  -> the simulator / renderer is slow.
+  Spheres themselves stutter / freeze -> Quest tracking or network.
+
 --source real: joints from /quest_teleop/joint_states (published by the teleop: both arms, the undriven one at its
 assumed / watched pose), arm bases from the hand-eye calibrations (world = the LEFT arm's base_link), and each
 Quest controller as TF {side}/controller under the frame "quest" (operator frame: x forward, y left, z up,
@@ -23,6 +31,7 @@ Publishes
 import argparse
 import json
 import sys
+import time
 from pathlib import Path
 
 import numpy as np
@@ -53,6 +62,71 @@ def tf_msg(parent, child, xyz, quat_xyzw, stamp):
     return t
 
 
+class LagStats:
+    """1 s windows: Quest hand stream (rate, frames repeated bit-for-bit = no new tracking data, longest gap), teleop
+    command rate, arm state rate + sim speed (header stamps vs wall clock), and the worst command-to-arm trail."""
+
+    def __init__(self):
+        self.t0 = time.monotonic()
+        self.n_hand, self.frozen, self.gap, self.last_hand, self.last_hand_t = 0, 0, 0.0, {}, {}
+        self.n_cmd, self.n_state, self.stamp0, self.stamp = 0, 0, None, None
+        self.trail = {s: 0.0 for s in SIDES}
+        self.lines = [("lag panel: waiting for the teleop...", (0.8, 0.8, 0.8))]
+        self.last_log = 0.0
+
+    def on_hand(self, side, msg):
+        now = time.monotonic()
+        p, o = msg.pose.position, msg.pose.orientation
+        key = (p.x, p.y, p.z, o.x, o.y, o.z, o.w)
+        self.n_hand += 1
+        self.frozen += key == self.last_hand.get(side)
+        if side in self.last_hand_t:
+            self.gap = max(self.gap, now - self.last_hand_t[side])
+        self.last_hand[side], self.last_hand_t[side] = key, now
+
+    def on_state(self, msg):
+        self.n_state += 1
+        st = msg.header.stamp
+        if st.sec or st.nanosec:
+            self.stamp = st.sec + st.nanosec * 1e-9
+            if self.stamp0 is None:
+                self.stamp0 = self.stamp
+
+    def update(self):
+        now = time.monotonic()
+        wall = max(now - self.t0, 1e-3)
+        hand_hz = self.n_hand / wall / max(1, len(self.last_hand))  # per controller
+        cmd_hz, st_hz = self.n_cmd / wall, self.n_state / wall
+        rtf = (self.stamp - self.stamp0) / wall if self.stamp is not None and self.stamp0 is not None else None
+        frozen = 100.0 * self.frozen / self.n_hand if self.n_hand else 0.0
+        slow_sim = 0 < st_hz < 25 or (rtf is not None and rtf < 0.9)
+        bad_link = self.n_hand and (frozen > 20 or self.gap > 0.15)
+        trail = max(self.trail.values())
+        self.lines = [
+            (f"QUEST side: hand poses {hand_hz:4.1f} Hz, frozen {frozen:3.0f} %, longest gap {self.gap * 1e3:4.0f} ms",
+             (1.0, 0.4, 0.4) if bad_link else (0.6, 1.0, 0.6)),
+            (f"ARM side:   commands {cmd_hz:4.1f} Hz, arm states {st_hz:5.1f} Hz"
+             + (f", sim {rtf * 100:3.0f} % of real time" if rtf is not None else "")
+             + f", arm trails command by up to {trail:4.1f} deg",
+             (1.0, 0.4, 0.4) if slow_sim else (0.6, 1.0, 0.6)),
+            ("=> " + (" + ".join(w for w, on in (("simulator too slow (render / CPU): solid arm lags the ghost", slow_sim),
+                                                  ("Quest link: hand poses freeze / stutter", bad_link)) if on)
+                      or ("no arm states (is the sim / driver running?)" if not st_hz else
+                          "both sides keep up" if self.n_hand else "no Quest hand poses yet")),
+             (1.0, 0.85, 0.3)),
+        ]
+        self.t0, self.n_hand, self.frozen, self.gap, self.n_cmd, self.n_state = now, 0, 0, 0.0, 0, 0
+        self.stamp0 = self.stamp
+        self.trail = {s: 0.0 for s in SIDES}
+
+    def log_due(self):
+        now = time.monotonic()
+        if now - self.last_log >= 5.0:
+            self.last_log = now
+            return True
+        return False
+
+
 class TeleopViz(Node):
     def __init__(self, yaw_deg, tcp_preset, source="isaac", quest_offset=(-0.6, -0.224, -1.0),
                  calibration=DEFAULT_CALIBRATION):
@@ -66,17 +140,21 @@ class TeleopViz(Node):
         self.yaw_deg = yaw_deg
         self.q = {s: None for s in SIDES}
         self.js_pub = {s: self.create_publisher(JointState, f"/{s}/joint_states", 10) for s in SIDES}
+        self.cmd_pub = {s: self.create_publisher(JointState, f"/cmd_{s}/joint_states", 10) for s in SIDES}
+        self.q_cmd = {s: None for s in SIDES}
+        self.lag = LagStats()
         self.mk_pub = self.create_publisher(MarkerArray, "/teleop_viz/markers", 1)
         self.tf = TransformBroadcaster(self)
         self.static = StaticTransformBroadcaster(self)
         if source == "real":
             self.create_subscription(JointState, "/quest_teleop/joint_states", self.on_js, 10)
-            for s in SIDES:
-                self.create_subscription(PoseStamped, f"/quest_teleop/{s}/hand",
-                                         lambda m, s=s: self.on_hand(s, m), 10)
-            self.create_subscription(String, "/quest_teleop/state", self.on_state, 10)
         else:
             self.create_subscription(JointState, "/dual_arm/isaac_joint_states", self.on_js, 10)
+        for s in SIDES:
+            self.create_subscription(PoseStamped, f"/quest_teleop/{s}/hand", lambda m, s=s: self.on_hand(s, m), 10)
+        self.create_subscription(String, "/quest_teleop/state", self.on_state, 10)
+        self.create_subscription(JointState, "/quest_teleop/action", self.on_action, 10)
+        self.create_timer(1.0, self.lag_panel)
         self.create_timer(1 / 30, self.tick)
         self.create_timer(1.0, self.markers)
 
@@ -94,12 +172,16 @@ class TeleopViz(Node):
             q_base = Rotation.from_euler("z", ARM_BASE_YAW_DEG, degrees=True).as_quat()
             for s in SIDES:
                 static.append(tf_msg("world", f"{s}/base_link", ARM_BASE_XYZ[s], q_base, now))
+            # operator frame drawn relative to the left arm base, as in the real view (same --quest-offset)
+            static.append(tf_msg("left/base_link", "quest", quest_offset, self.r_axes.as_quat(), now))
         for s in SIDES:
             static.append(tf_msg(f"{s}/link6", f"{s}/control_tcp", self.tcp, [0, 0, 0, 1], now))
+            static.append(tf_msg(f"{s}/base_link", f"cmd_{s}/base_link", (0, 0, 0), (0, 0, 0, 1), now))
         self.static.sendTransform(static)
         self.get_logger().info(f"teleop frames: hand axes = arm base axes rotated {yaw_deg:+.0f} deg about Z")
 
     def on_js(self, msg):
+        self.lag.on_state(msg)
         d = dict(zip(msg.name, msg.position))
         for s in SIDES:
             names = [f"arm_{s}_{j}" for j in ARM_JOINTS]
@@ -107,7 +189,22 @@ class TeleopViz(Node):
                 self.q[s] = np.array([d[n] for n in names])
                 self.js_pub[s].publish(JointState(header=msg.header, name=ARM_JOINTS, position=list(self.q[s])))
 
+    def on_action(self, msg):
+        """Teleop command (both arms, every tick) -> the translucent command arms."""
+        self.lag.n_cmd += 1
+        d = dict(zip(msg.name, msg.position))
+        for s in SIDES:
+            names = [f"arm_{s}_{j}" for j in ARM_JOINTS]
+            if all(n in d for n in names):
+                self.q_cmd[s] = np.array([d[n] for n in names])
+                js = JointState(name=ARM_JOINTS, position=list(self.q_cmd[s]))
+                js.header.stamp = self.get_clock().now().to_msg()  # robot_state_publisher needs a real stamp
+                self.cmd_pub[s].publish(js)
+                if self.q[s] is not None:
+                    self.lag.trail[s] = max(self.lag.trail[s], float(np.rad2deg(np.max(np.abs(self.q_cmd[s] - self.q[s])))))
+
     def on_hand(self, side, msg):
+        self.lag.on_hand(side, msg)
         p, o = msg.pose.position, msg.pose.orientation
         self.tf.sendTransform([tf_msg("quest", f"{side}/controller", (p.x, p.y, p.z), (o.x, o.y, o.z, o.w),
                                       self.get_clock().now().to_msg())])
@@ -153,7 +250,7 @@ class TeleopViz(Node):
             text(f, (0, 0, 0.17), "(translation directions only - never rotates)", (0.8, 0.8, 0.8), 0.02)
             text(f"{s}/base_link", (0, 0, -0.06), f"{s.upper()} arm base_link (IK frame)", (1, 1, 1), 0.035)
             text(f"{s}/control_tcp", (0, 0, -0.04), f"{s} control point ({self.tcp_preset}) - rotates with the wrist", (1, 1, 0.3), 0.025)
-        if self.source == "real":
+        if self.hand_state:  # Quest controllers (both sources)
             for s in SIDES:
                 st = self.hand_state.get(s)
                 if st is None:
@@ -168,10 +265,19 @@ class TeleopViz(Node):
                 k += 1
                 text(f"{s}/controller", (0, 0, 0.06), f"{s} controller: " + {"engaged": "GRIP - driving the arm",
                      "tracked": "released", "lost": "tracking lost"}[st], rgb, 0.03)
+        if self.source == "real":
             text("world", (0, 0.25, 1.2), f"REAL arms  (Quest operator frame: --yaw-deg {self.yaw_deg:+.0f})", (1, 1, 1), 0.05)
         else:
             text("world", (0, 0.25, 1.75), f"Quest teleop frames  (--yaw-deg {self.yaw_deg:+.0f})", (1, 1, 1), 0.05)
+        for i, (line, rgb) in enumerate(self.lag.lines):
+            text("world", (0, 0.25, (1.62 if self.source != "real" else 1.07) - 0.045 * i), line, rgb, 0.035)
         self.mk_pub.publish(arr)
+
+    def lag_panel(self):
+        self.lag.update()
+        if self.lag.log_due():
+            self.get_logger().info(" | ".join(t for t, _ in self.lag.lines))
+        self.markers()
 
 
 def main():

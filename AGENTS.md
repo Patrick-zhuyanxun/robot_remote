@@ -140,3 +140,9 @@
 - 隨機擺放：每次啟動在桌面內取中心與 yaw（USD 方向 ±30°），四角距桌緣 ≥ 2 cm、中心距桌面中心 ≥ 5 cm；`--box-seed` / `--no-random-box` / `--box-yaw-deg` / `--box-margin` / `--box-min-offset`。執行中 `ros2 topic pub --once /dual_arm/reset_scene std_msgs/msg/Empty "{}"` 重新擺放（全部剛體一起移動、速度歸零、蓋子關閉）；`/dual_arm/box_pose` 發布 Body 位姿（frame world）。桌面中心 (0, −0.663)。
 - 驗證（headless，皆為模擬）：`check_box_task_scene.py` 全部通過 —— 靜置 5 s 漂移 0.00 mm、四蓋 < 0.05°；四蓋 60° 放手回 0°、110° 放手到 175°；側推 0.3 m/s 滑 0.5 cm 不傾倒；壓入桌面 1 cm 的彈出速度 0.25 m/s（上限 0.5）；相機峰對峰 0.000°。20 次 reset 皆直立、在桌面上、靜止。home 姿態手臂最低點 1.196 m 高於箱頂 1.191 m。53 項 unittest 通過。
 - 未驗證：實際用手臂/夾爪推箱子與開蓋的手感（需 Quest 實操）；遠側桌面接近 ReBeL 工作範圍邊緣。錄製尚未在每個 episode 自動 reset 箱子。既有 `ch_v4_*_hold` 固定關節每次啟動警告 "disjointed body transforms"（約 0.2 m z 差），與本次無關、未處理。
+
+## 模擬卡頓判讀 + 模擬用 RViz（2026-10-19，Claude）
+
+- 使用者實測的 `[timing]`（logs/teleop_20261019_193103.log）：teleop 迴圈 29.9 Hz、tick p50 約 1–2 ms、Quest 讀取 1.5 ms，皆正常；但 Isaac joint states 只有 **15 Hz**（GUI 渲染約 15 FPS），模擬速度從 65 % 降到 **35–40 % 真實時間**。卡頓主因在 Isaac 端（渲染 / CPU），不在 teleop。第二段下降約在 19:32:08，與 sim log 中使用者操作選單（開 Viewport）同時。GPU 當時未降頻；CPU governor 為 powersave；AnyDesk 在執行（遠端桌面擷取畫面也吃資源）。
+- RViz 模擬版：GUI 勾選「RViz (sim)」（預設開）或 `quest_teleop/run_teleop_viz.sh --source isaac`。實心手臂 = Isaac 實際姿態，半透明 = teleop 送出的命令（`/quest_teleop/action` → `/cmd_{side}/joint_states` + 兩個 robot_state_publisher），球 = Quest 控制器（綠 = 握持）。畫面上有延遲面板並每 5 s 寫入 viz log：Quest 端（手部姿態 Hz、逐位元相同的凍結幀 %、最長間隔）與手臂端（命令 Hz、手臂狀態 Hz、模擬速度、手臂落後命令的最大角度），並給出判斷。
+- 驗證：headless 模擬 + 假 teleop 發布：ghost 手臂 TF、控制器 TF、凍結偵測（凍結 2 s 時 83 %）、無狀態時提示；53 項測試通過。未在實際頭盔下看過 RViz 畫面。

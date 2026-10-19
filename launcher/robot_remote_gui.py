@@ -35,6 +35,7 @@ DEFAULTS = {
     "root": os.environ.get("ROBOT_REMOTE_DATASETS", str(ROOT / "datasets")), "resolution": "640x480", "fps": 30, "yaw_deg": 0,
     "left_ip": ENDPOINTS["left"]["host"], "right_ip": ENDPOINTS["right"]["host"], "real_dry_run": True,
     "real_park": True, "real_enable": True, "real_rviz": True, "real_start_home": True,
+    "sim_rviz": True,  # sim: RViz with Isaac arms vs teleop commands + Quest controllers + lag panel
     "rot_frame": "tool",  # Quest hand rotation applied about the tool's own axes, or about the fixed base axes
 }
 FRAME_TEXT = {"tool": "Rotation: TOOL frame  (click: base)", "base": "Rotation: BASE frame  (click: tool)"}
@@ -224,6 +225,9 @@ class App(tk.Tk):
         self.v_fps = tk.StringVar(value=str(self.cfg["fps"]))
         ttk.Combobox(row, textvariable=self.v_fps, values=["30", "15", "10"], width=4, state="readonly").pack(side="left", padx=6)
         ttk.Label(row, text="More cameras = slower sim (3 cameras ~0.5x real time)", style="Dim.TLabel").pack(side="left", padx=12)
+        self.v_sim_rviz = tk.BooleanVar(value=self.cfg["sim_rviz"])
+        ttk.Checkbutton(g, text="RViz (sim): Isaac arms vs teleop commands, Quest controllers, lag panel "
+                                   "(Quest link or simulator?)", variable=self.v_sim_rviz).pack(anchor="w", padx=8)
 
         g = ttk.LabelFrame(left, text="4  Data recording")
         g.pack(fill="x", pady=4)
@@ -361,6 +365,7 @@ class App(tk.Tk):
                "right_ip": self.v_real_ips["right"].get().strip(), "real_dry_run": self.v_real_dry.get(),
                "real_park": self.v_real_park.get(), "real_enable": self.v_real_enable.get(),
                "real_rviz": self.v_real_rviz.get(), "real_start_home": self.v_real_start_home.get(),
+               "sim_rviz": self.v_sim_rviz.get(),
                "rot_frame": self.cfg.get("rot_frame", "tool")}  # set on the run page (button), kept for next time
         if real:
             try:
@@ -555,6 +560,10 @@ class App(tk.Tk):
             self._set("teleop", C["err"], f"failed to start - see log: {self.procs['teleop'].log_path}")
             return
         self._set("teleop", C["warn"], f"waiting for the Quest (Server IP {lan_ip()})")
+        if cfg.get("sim_rviz"):
+            self._msg("[teleop] opening RViz: solid = Isaac arms, ghost = teleop command, spheres = Quest controllers")
+            self.procs["viz"] = Proc("viz", [str(ROOT / "quest_teleop" / "run_teleop_viz.sh"), "--source", "isaac",
+                                             "--yaw-deg", str(cfg["yaw_deg"])])
 
         if cfg["record"]:
             rec_cmd = [str(ROOT / "recording" / "run_record.sh"), "--name", cfg["name"], "--task", cfg["task"],
