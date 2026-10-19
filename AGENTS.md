@@ -152,3 +152,11 @@
 - 使用者質疑顯存用量低。實測模擬執行中：GPU 35 %、P5、960 MHz、Isaac 顯存 1.5 GB → GPU 不是瓶頸；Isaac 主執行緒 CPU 87–100 % → 每秒約 98 幀，每幀只推進 1 個 physics step（1/120 s，由 `/clock` 量得 8.3 ms/幀），所以要 120 FPS 才是真實時間，量到 82 %；teleop / Viewport / RViz 同時跑時降到 35–65 %。
 - 更正：先前 `[timing]` 的「joint states 15 Hz」是 teleop 量測假象 —— 每拍一次 `spin_once` 只有隔拍處理到狀態。實際 Isaac 發布約 95 Hz。teleop 改為每拍 spin 3 次（假 100 Hz 發布實測 15.0 → 29.7 Hz），q_meas 也因此每拍更新。
 - teleop 雙手握持時 IK 區段 p95 達 40–60 ms 並 overrun；離線同樣的 IK 兩臂只要約 4 ms（在 Isaac 執行中量測 p95 4–10 ms）。live 尖峰原因未確定。teleop 的 2 條 OpenBLAS 執行緒在空轉（各約 62 s CPU，多為 sys）；設 `OPENBLAS_NUM_THREADS=1` 時 CPU 用量從 7.2 s 降到 1.2 s，但 IK p95 反而變差（9–10 ms 對 4–6 ms，推測與 powersave 下核心降頻有關），所以未採用。
+
+## CPU 分核 + 計時 log（2026-10-19，Claude）
+
+- 使用者已把 governor 改為 performance。另發現 `intel_pstate/no_turbo = 1`：i9-14900K 的 Turbo 被關，P-core（0–15）上限 3.2 GHz、E-core（16–31）2.4 GHz。Isaac 受單一主執行緒限制，頻率影響直接。是否開 Turbo 由使用者 / 管理者決定（14900K 有已知的高頻穩定性問題，可能是刻意關的；開之前先確認 BIOS / microcode）。
+- GUI 啟動的程式依角色綁 CPU（`taskset`，子程序繼承；`ROBOT_REMOTE_NO_PIN=1` 關閉）：sim = 最快的核心扣掉最後兩個實體核（本機 0–11），teleop（含 CloudXR runtime）= 那兩個實體核（12–15），RViz / robot_state_publisher / 錄製 / driver = 慢核（16–31）。每個 log 第一行記錄綁定的 CPU。終端機手動執行時可用 `taskset -c 0-11 ./dual_arm_sim/run_dual_arm_sim.sh`、`taskset -c 12-15 ./quest_teleop/run_quest_dual_arm.sh ...`、`taskset -c 16-31 ./quest_teleop/run_teleop_viz.sh`。
+- Isaac 新增 `[dual_arm] [timing]`（每 5 s）：frames/s、frame p50/p95/max、模擬速度、主執行緒所在 CPU。headless 綁 0–11 實測 131 frames/s、frame p50 6.8 ms。
+- teleop `[timing]` 的 ik 區段拆出 `solve`（IK 解算本身，兩臂合計，含 max）與 `guard`（兩臂碰撞檢查），並記錄主執行緒所在 CPU。用來判斷先前 40–60 ms 的尖峰是 IK、guard 還是其他。
+- 驗證：53 項測試通過；pinning 以子程序讀 `Cpus_allowed_list` 確認。尚未在實機操作下看到新的 log。

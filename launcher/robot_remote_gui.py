@@ -12,6 +12,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -89,11 +90,46 @@ def load_cfg():
         return dict(DEFAULTS)
 
 
+def cpu_sets():
+    """Split the CPUs so Isaac, the teleop and the helpers do not compete. Isaac is limited by ONE main thread, so
+    it gets the fast cores; on a hybrid CPU (i9-14900K: P-cores 0-15 at 3.2 GHz without turbo, E-cores 16-31 at
+    2.4 GHz) Linux otherwise also runs that thread on an E-core. sim = fast cores minus the last two physical cores,
+    teleop = those two (IK runs every 33 ms), aux (RViz, robot_state_publishers, recorder, drivers) = slow cores.
+    Returns {} (no pinning) when ROBOT_REMOTE_NO_PIN=1 or the machine is too small."""
+    if os.environ.get("ROBOT_REMOTE_NO_PIN") == "1":
+        return {}
+    try:
+        cpus = sorted(os.sched_getaffinity(0))
+        fmax = {c: int(Path(f"/sys/devices/system/cpu/cpu{c}/cpufreq/cpuinfo_max_freq").read_text()) for c in cpus}
+        core = {c: int(Path(f"/sys/devices/system/cpu/cpu{c}/topology/core_id").read_text()) for c in cpus}
+    except (OSError, ValueError):
+        return {}
+    fast = [c for c in cpus if fmax[c] == max(fmax.values())]
+    slow = [c for c in cpus if c not in fast]
+    fast_cores = sorted({core[c] for c in fast})
+    if len(fast_cores) < 4:
+        return {}
+    teleop_cores = set(fast_cores[-2:])
+    teleop = [c for c in fast if core[c] in teleop_cores]
+    sim = [c for c in fast if core[c] not in teleop_cores]
+    aux = slow or teleop
+    fmt = lambda cs: ",".join(map(str, cs))  # noqa: E731
+    return {"sim": fmt(sim), "teleop": fmt(teleop), "aux": fmt(aux)}
+
+
+CPU_SETS = cpu_sets()
+CPU_ROLE = {"sim": "sim", "replay_sim": "sim", "teleop": "teleop"}  # everything else: aux
+
+
 class Proc:
-    """A launched script: log file + optional line callback + stdin for the recorder."""
+    """A launched script: log file + optional line callback + stdin for the recorder. Pinned to its CPU set
+    (cpu_sets(); children inherit it)."""
 
     def __init__(self, name, cmd, on_line=None, stdin=False, extra_env=None):
         self.name, self.cmd, self.on_line = name, cmd, on_line
+        self.cpus = CPU_SETS.get(CPU_ROLE.get(name, "aux"))
+        if self.cpus and shutil.which("taskset"):
+            cmd = ["taskset", "-c", self.cpus, *cmd]
         LOG_DIR.mkdir(exist_ok=True)
         self.log_path = LOG_DIR / f"{name}_{time.strftime('%Y%m%d_%H%M%S')}.log"
         env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "AMENT_PREFIX_PATH", "LD_LIBRARY_PATH")}
@@ -106,6 +142,8 @@ class Proc:
 
     def _pump(self):
         with open(self.log_path, "w") as f:
+            if self.cpus:
+                f.write(f"[launcher] {self.name} pinned to CPUs {self.cpus}\n")
             for line in self.p.stdout:
                 f.write(line)
                 f.flush()

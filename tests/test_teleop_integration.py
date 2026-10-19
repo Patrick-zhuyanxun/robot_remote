@@ -488,7 +488,7 @@ class NodeIntegrationTests(unittest.TestCase):
         st.on_state(JointState(header=Header(stamp=Time(sec=10))))
         st.reset(t0)
         for _ in range(15):  # 15 Hz loop over 1 s
-            st.tick({"tick": .05, "xr": .01, "ik": .03, "pub": .001}, .02)
+            st.tick({"tick": .05, "xr": .01, "ik": .03, "pub": .001, "solve": .02, "guard": .005}, .02)
         st.on_state(JointState(header=Header(stamp=Time(sec=10, nanosec=500_000_000))))
         self.assertIsNone(st.report(t0 + .5))
         line, bad = st.report(t0 + 1.0)

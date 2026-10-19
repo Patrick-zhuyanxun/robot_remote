@@ -15,6 +15,7 @@ Launch via run_dual_arm_sim.sh (sets up Isaac Sim's bundled ROS 2 Humble librari
 
 import argparse
 import functools
+import os
 import sys
 from pathlib import Path
 
@@ -306,10 +307,41 @@ if box is not None:
     except Exception as exc:  # noqa: BLE001  (sim still runs, only the reset topic is missing)
         print(f"[dual_arm] WARNING: no /dual_arm/reset_scene ({exc})")
 
+
+
+class SimTiming:
+    """[dual_arm] [timing] line every 5 s: frames/s, frame time, sim speed (sim time / wall time) and the CPU the
+    main thread ran on. Isaac is limited by this one thread; sim speed < 100 % = the arms move in slow motion."""
+
+    def __init__(self, period=5.0):
+        import time as _t
+        self.t, self.period = _t, period
+        self.t0, self.sim0, self.frames, self.dts = _t.perf_counter(), sim.current_time, 0, []
+
+    def frame(self, dt):
+        self.frames += 1
+        self.dts.append(dt)
+        now = self.t.perf_counter()
+        if now - self.t0 < self.period:
+            return
+        wall, simt = now - self.t0, sim.current_time - self.sim0
+        try:
+            cpu = Path("/proc/thread-self/stat").read_text().rsplit(")", 1)[1].split()[36]
+        except (OSError, IndexError):
+            cpu = "?"
+        print(f"[dual_arm] [timing] {self.frames / wall:5.1f} frames/s | frame p50 {np.percentile(self.dts, 50) * 1e3:5.1f} "
+              f"p95 {np.percentile(self.dts, 95) * 1e3:5.1f} max {max(self.dts) * 1e3:6.1f} ms | sim {simt / wall * 100:3.0f} % "
+              f"real time | main thread on CPU {cpu} (allowed {len(os.sched_getaffinity(0))} CPUs)")
+        self.t0, self.sim0, self.frames, self.dts = now, sim.current_time, 0, []
+
+
+timing = SimTiming()
 print("[dual_arm] running - Ctrl+C to stop")
 try:
     while simulation_app.is_running():
+        t_frame = timing.t.perf_counter()
         sim.step(render=True)  # render=True also runs app.update(), which ticks the ROS 2 OmniGraph
+        timing.frame(timing.t.perf_counter() - t_frame)
         if reset_node is not None:
             rclpy.spin_once(reset_node, timeout_sec=0.0)
             if reset_req:

@@ -78,7 +78,7 @@ class LoopStats:
     def reset(self, now):
         self.t_start = now
         self.ticks, self.overruns = 0, 0
-        self.parts = {"tick": [], "xr": [], "ik": [], "pub": []}
+        self.parts = {"tick": [], "xr": [], "ik": [], "pub": [], "solve": [], "guard": []}
         self.age = []
         self.js_n0, self.js_stamp0 = getattr(self, "js_n", 0), getattr(self, "js_stamp", None)
 
@@ -107,10 +107,15 @@ class LoopStats:
         rtf = None
         if self.js_stamp is not None and self.js_stamp0 is not None:
             rtf = (self.js_stamp - self.js_stamp0) / wall
+        try:
+            cpu = Path("/proc/thread-self/stat").read_text().rsplit(")", 1)[1].split()[36]
+        except (OSError, IndexError):
+            cpu = "?"
         line = (f"[timing] loop {self.ticks / wall:4.1f} Hz (target {self.rate:.0f}), {self.overruns} overruns | "
                 f"tick p50 {pct(self.parts['tick'], 50):4.1f} max {max(self.parts['tick']):5.1f} ms | "
                 f"quest {pct(self.parts['xr'], 95):4.1f} ik {pct(self.parts['ik'], 95):4.1f} "
-                f"pub {pct(self.parts['pub'], 95):4.1f} ms p95 | joint states {js_hz:4.1f} Hz, "
+                f"(solve {pct(self.parts['solve'], 95):4.1f} max {max(self.parts['solve'], default=0.0):5.1f}, guard {pct(self.parts['guard'], 95):4.1f}) "
+                f"pub {pct(self.parts['pub'], 95):4.1f} ms p95 | CPU {cpu} | joint states {js_hz:4.1f} Hz, "
                 f"age p95 {pct(self.age, 95):5.0f} ms" + (f" | sim {rtf * 100:3.0f} % real time" if rtf is not None else ""))
         bad = (self.ticks / wall < 0.9 * self.rate or (rtf is not None and rtf < 0.9)
                or pct(self.age, 95) > 3e3 / self.rate)
@@ -721,6 +726,7 @@ def run_session(node, chain, args):
             t_xr = time.perf_counter()
             node.update_ethernet()
             cand, grips = {}, {}
+            solve_s = 0.0  # IK solver time (both arms) this tick
             for side, arm in node.arms.items():
                 tracked, pos, quat, squeeze, trigger = readings[hand_of[side]]
                 if tracked != arm.tracked:
@@ -810,7 +816,9 @@ def run_session(node, chain, args):
                     t_des = np.eye(4)
                     t_des[:3, 3] = arm.cmd_p
                     t_des[:3, :3] = arm.cmd_r.as_matrix()
+                    t_s = time.perf_counter()
                     q_ik = chain.ik(arm.q_cmd, t_des, rot_weight=args.rot_weight)
+                    solve_s += time.perf_counter() - t_s
                     cand[side] = step_toward(arm.q_cmd, q_ik, max_dq)
                     arm.p_des = p_des
                     ps = PoseStamped()
@@ -828,6 +836,7 @@ def run_session(node, chain, args):
             # step that brings the two arms' surfaces closer than --min-arm-dist while also reducing the
             # clearance (moving apart is always allowed). With one driven arm the other arm is the watched one,
             # read-only from its controller; if its state is stale the driven arm holds.
+            t_g = time.perf_counter()
             if cand and (both or node.watch_side is not None):
                 now = {s: (node.arms[s].q_meas if node.ethernet else node.arms[s].q_cmd) for s in node.arms}
                 nxt = {s: cand.get(s, now[s]) for s in node.arms}
@@ -855,6 +864,7 @@ def run_session(node, chain, args):
                         arm.engaged, arm.need_regrip = False, True
 
             t_ik = time.perf_counter()
+            guard_s = t_ik - t_g
             for side, q in cand.items():
                 node.arms[side].q_cmd = q
             if node.ethernet:
@@ -905,7 +915,8 @@ def run_session(node, chain, args):
                         log.info(f"[{side}] ROT hand(op x fwd,y left,z up) {rv(hand_rot_op)} | cmd(base, rate-limited) {rv(arm.cmd_r * arm.home_r.inv())}"
                                  f" | actual(base) {rv(meas_rot)} | raw quat xyzw {np.round(arm.raw_quat, 3)}")
             t_end = time.perf_counter()
-            node.stats.tick({"tick": t_end - t0, "xr": t_xr - t0, "ik": t_ik - t_xr, "pub": t_pub - t_ik},
+            node.stats.tick({"tick": t_end - t0, "xr": t_xr - t0, "ik": t_ik - t_xr, "pub": t_pub - t_ik,
+                             "solve": solve_s, "guard": guard_s},
                             time.monotonic() - min(a.t_meas for a in node.arms.values()))
             if rep := node.stats.report(t_end):
                 (log.warning if rep[1] else log.info)(rep[0])
