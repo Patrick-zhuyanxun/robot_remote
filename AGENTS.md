@@ -160,3 +160,4 @@
 - Isaac 新增 `[dual_arm] [timing]`（每 5 s）：frames/s、frame p50/p95/max、模擬速度、主執行緒所在 CPU。headless 綁 0–11 實測 131 frames/s、frame p50 6.8 ms。
 - teleop `[timing]` 的 ik 區段拆出 `solve`（IK 解算本身，兩臂合計，含 max）與 `guard`（兩臂碰撞檢查），並記錄主執行緒所在 CPU。用來判斷先前 40–60 ms 的尖峰是 IK、guard 還是其他。
 - 驗證：53 項測試通過；pinning 以子程序讀 `Cpus_allowed_list` 確認。尚未在實機操作下看到新的 log。
+- 修正（2026-10-19）：teleop 啟動後握持即崩潰 `ValueError: Logger severity cannot be changed between calls.` —— `[timing]` 用同一行 `(log.warning if bad else log.info)(line)`，rclpy 不允許同一呼叫位置改變嚴重度，第一次由 WARN 轉 INFO 就丟例外。改為 `log_timing()` 兩個呼叫位置，新增回歸測試（舊寫法重現該錯誤），54 項測試通過。

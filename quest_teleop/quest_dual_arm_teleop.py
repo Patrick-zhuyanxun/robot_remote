@@ -123,6 +123,15 @@ class LoopStats:
         return line, bad
 
 
+def log_timing(log, line, bad):
+    """WARN when unhealthy, else INFO. Two call sites on purpose: rclpy raises ValueError when ONE call site logs
+    at a different severity than before (a single `(log.warning if bad else log.info)(line)` crashed the teleop)."""
+    if bad:
+        log.warning(line)
+    else:
+        log.info(line)
+
+
 def tool_from_controller(r_tool: Rotation, twist_axis_ctrl, right_ctrl, right_base) -> Rotation:
     """Fixed-at-engage rotation M mapping controller-local axes onto tool-local axes:
        controller twist axis (Quest handle long axis)      -> tool +Z (flange axis): twist hand = spin tool
@@ -919,7 +928,7 @@ def run_session(node, chain, args):
                              "solve": solve_s, "guard": guard_s},
                             time.monotonic() - min(a.t_meas for a in node.arms.values()))
             if rep := node.stats.report(t_end):
-                (log.warning if rep[1] else log.info)(rep[0])
+                log_timing(log, *rep)
             time.sleep(max(0.0, dt - (time.perf_counter() - t0)))
     except KeyboardInterrupt:
         pass

@@ -496,6 +496,16 @@ class NodeIntegrationTests(unittest.TestCase):
         self.assertIn("15 overruns", line)
         self.assertIn("sim  50 % real time", line)
 
+    def test_timing_line_can_switch_between_warn_and_info(self):
+        rclpy.init()
+        node = rclpy.create_node("timing_log_test")
+        try:
+            for bad in (True, False, True, False):  # crashed with ValueError on the first switch
+                teleop.log_timing(node.get_logger(), "[timing] test", bad)
+        finally:
+            node.destroy_node()
+            rclpy.try_shutdown()
+
     def test_park_skipped_without_ethernet_link(self):
         args, _ = teleop.parse_args(["--backend", "real", "--control", "position", "--dry-run"])
         self.assertTrue(args.dry_run)  # dry run never parks (park_on_exit returns before any motion)
