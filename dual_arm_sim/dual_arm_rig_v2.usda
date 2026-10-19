@@ -1157,8 +1157,8 @@ def Xform "World"
                                                                 )
                                                                 {
                                                                     point3f physics:centerOfMass = (0, 0, 0)
-                                                                    float3 physics:diagonalInertia = (1e-9, 1e-9, 1e-9)
-                                                                    float physics:mass = 1e-9
+                                                                    float3 physics:diagonalInertia = (0.00003, 0.00003, 0.00003)
+                                                                    float physics:mass = 0.05
                                                                     quatf physics:principalAxes = (1, 0, 0, 0)
                                                                     quatf xformOp:orient = (0.70512813, 0.7051307, -0.052843943, 0.05284414)
                                                                     float3 xformOp:scale = (1, 1, 1)
@@ -1806,8 +1806,8 @@ def Xform "World"
                                                                 )
                                                                 {
                                                                     point3f physics:centerOfMass = (0, 0, 0)
-                                                                    float3 physics:diagonalInertia = (1e-9, 1e-9, 1e-9)
-                                                                    float physics:mass = 1e-9
+                                                                    float3 physics:diagonalInertia = (0.00003, 0.00003, 0.00003)
+                                                                    float physics:mass = 0.05
                                                                     quatf physics:principalAxes = (1, 0, 0, 0)
                                                                     quatf xformOp:orient = (0.70512813, 0.7051307, -0.052843943, 0.05284414)
                                                                     float3 xformOp:scale = (1, 1, 1)
@@ -2430,9 +2430,9 @@ def Xform "World"
                 prepend apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular", "PhysxJointAPI"]
             )
             {
-                float drive:angular:physics:damping = 0
+                float drive:angular:physics:damping = 1
                 float drive:angular:physics:maxForce = 10
-                float drive:angular:physics:stiffness = 0
+                float drive:angular:physics:stiffness = 20
                 float drive:angular:physics:targetPosition = 0
                 uniform token drive:angular:physics:type = "force"
                 uniform token physics:axis = "Z"
@@ -2513,9 +2513,9 @@ def Xform "World"
                 prepend apiSchemas = ["PhysicsDriveAPI:angular", "PhysicsJointStateAPI:angular", "PhysxJointAPI"]
             )
             {
-                float drive:angular:physics:damping = 0
+                float drive:angular:physics:damping = 1
                 float drive:angular:physics:maxForce = 10
-                float drive:angular:physics:stiffness = 0
+                float drive:angular:physics:stiffness = 20
                 float drive:angular:physics:targetPosition = 0
                 uniform token drive:angular:physics:type = "force"
                 uniform token physics:axis = "Z"
@@ -2989,6 +2989,29 @@ def Xform "World"
                 float inputs:metallic = 0
                 float inputs:roughness = 0.9
                 token outputs:surface
+            }
+        }
+
+        def "Physics"
+        {
+            def Material "cardboard" (
+                prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+            )
+            {
+                float physics:dynamicFriction = 0.5
+                float physics:restitution = 0
+                float physics:staticFriction = 0.6
+                uniform token physxMaterial:frictionCombineMode = "average"
+            }
+
+            def Material "table" (
+                prepend apiSchemas = ["PhysicsMaterialAPI", "PhysxMaterialAPI"]
+            )
+            {
+                float physics:dynamicFriction = 0.4
+                float physics:restitution = 0
+                float physics:staticFriction = 0.5
+                uniform token physxMaterial:frictionCombineMode = "average"
             }
         }
     }
@@ -3980,6 +4003,9 @@ def Xform "World"
         {
             float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
             rel material:binding = </World/Looks/table_mat>
+            rel material:binding:physics = </World/Looks/Physics/table> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
             color3f[] primvars:displayColor = [(0.72, 0.66, 0.55)]
             double size = 1
             quatf xformOp:orient = (1, 0, 0, 0)
@@ -3994,6 +4020,9 @@ def Xform "World"
         {
             float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
             rel material:binding = </World/Looks/table_mat>
+            rel material:binding:physics = </World/Looks/Physics/table> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
             color3f[] primvars:displayColor = [(0.72, 0.66, 0.55)]
             double size = 1
             quatf xformOp:orient = (1, 0, 0, 0)
@@ -4008,6 +4037,9 @@ def Xform "World"
         {
             float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
             rel material:binding = </World/Looks/table_mat>
+            rel material:binding:physics = </World/Looks/Physics/table> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
             color3f[] primvars:displayColor = [(0.72, 0.66, 0.55)]
             double size = 1
             quatf xformOp:orient = (1, 0, 0, 0)
@@ -4022,6 +4054,9 @@ def Xform "World"
         {
             float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
             rel material:binding = </World/Looks/table_mat>
+            rel material:binding:physics = </World/Looks/Physics/table> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
             color3f[] primvars:displayColor = [(0.72, 0.66, 0.55)]
             double size = 1
             quatf xformOp:orient = (1, 0, 0, 0)
@@ -4036,6 +4071,9 @@ def Xform "World"
         {
             float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
             rel material:binding = </World/Looks/table_mat>
+            rel material:binding:physics = </World/Looks/Physics/table> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
             color3f[] primvars:displayColor = [(0.72, 0.66, 0.55)]
             double size = 1
             quatf xformOp:orient = (1, 0, 0, 0)
@@ -4053,10 +4091,21 @@ def Xform "World"
         uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
 
         def Xform "Body" (
-            prepend apiSchemas = ["PhysicsRigidBodyAPI"]
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsMassAPI", "PhysxRigidBodyAPI", "MaterialBindingAPI"]
         )
         {
-            bool physics:kinematicEnabled = 1
+            rel material:binding:physics = </World/Looks/Physics/cardboard> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
+            bool physics:kinematicEnabled = 0
+            float physics:mass = 0.4
+            float physxRigidBody:angularDamping = 0.5
+            bool physxRigidBody:enableCCD = 1
+            float physxRigidBody:linearDamping = 0.1
+            float physxRigidBody:maxDepenetrationVelocity = 0.5
+            float physxRigidBody:maxLinearVelocity = 2
+            int physxRigidBody:solverPositionIterationCount = 16
+            int physxRigidBody:solverVelocityIterationCount = 4
             double3 xformOp:translate = (0.4, 0, 0.125)
             uniform token[] xformOpOrder = ["xformOp:translate"]
 
@@ -4127,34 +4176,54 @@ def Xform "World"
         }
 
         def Cube "LidBack" (
-            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysicsMassAPI", "MaterialBindingAPI"]
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysicsMassAPI", "MaterialBindingAPI", "PhysxRigidBodyAPI"]
         )
         {
             float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
             rel material:binding = </World/Looks/cardboard>
+            rel material:binding:physics = </World/Looks/Physics/cardboard> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
             uniform token physics:approximation = "boundingCube"
-            float physics:mass = 0.03
+            float physics:mass = 0.035
+            float physxRigidBody:angularDamping = 0.5
+            bool physxRigidBody:enableCCD = 1
+            float physxRigidBody:linearDamping = 0.1
+            float physxRigidBody:maxDepenetrationVelocity = 0.5
+            float physxRigidBody:maxLinearVelocity = 2
+            int physxRigidBody:solverPositionIterationCount = 16
+            int physxRigidBody:solverVelocityIterationCount = 4
             color3f[] primvars:displayColor = [(0.62, 0.42, 0.2)]
             double size = 1
             quatd xformOp:orient = (1, 0, 0, 0)
             double3 xformOp:scale = (0.157, 0.45, 0.005)
-            double3 xformOp:translate = (0.48150000000000004, 0, 0.2525)
+            double3 xformOp:translate = (0.48150000000000004, 0, 0.2585)
             uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
         }
 
         def Cube "LidFront" (
-            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysicsMassAPI", "MaterialBindingAPI"]
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "PhysicsMeshCollisionAPI", "PhysicsMassAPI", "MaterialBindingAPI", "PhysxRigidBodyAPI"]
         )
         {
             float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
             rel material:binding = </World/Looks/cardboard>
+            rel material:binding:physics = </World/Looks/Physics/cardboard> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
             uniform token physics:approximation = "boundingCube"
-            float physics:mass = 0.03
+            float physics:mass = 0.035
+            float physxRigidBody:angularDamping = 0.5
+            bool physxRigidBody:enableCCD = 1
+            float physxRigidBody:linearDamping = 0.1
+            float physxRigidBody:maxDepenetrationVelocity = 0.5
+            float physxRigidBody:maxLinearVelocity = 2
+            int physxRigidBody:solverPositionIterationCount = 16
+            int physxRigidBody:solverVelocityIterationCount = 4
             color3f[] primvars:displayColor = [(0.62, 0.42, 0.2)]
             double size = 1
             quatd xformOp:orient = (1, 0, 0, 0)
             double3 xformOp:scale = (0.157, 0.45, 0.005)
-            double3 xformOp:translate = (0.3185, 0, 0.2525)
+            double3 xformOp:translate = (0.3185, 0, 0.2585)
             uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
         }
 
@@ -4162,36 +4231,122 @@ def Xform "World"
             prepend apiSchemas = ["PhysicsDriveAPI:angular"]
         )
         {
-            float drive:angular:physics:damping = 5
+            float drive:angular:physics:damping = 0.0002
             float drive:angular:physics:stiffness = 0
             uniform token drive:angular:physics:type = "force"
             uniform token physics:axis = "Y"
             rel physics:body0 = </World/CardboardBox/Body>
             rel physics:body1 = </World/CardboardBox/LidBack>
-            point3f physics:localPos0 = (0.16, 0, 0.125)
+            point3f physics:localPos0 = (0.16, 0, 0.131)
             point3f physics:localPos1 = (0.5, 0, -0.5)
-            quatf physics:localRot0 = (0.70710677, 0, 0.70710677, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
             quatf physics:localRot1 = (1, 0, 0, 0)
-            float physics:lowerLimit = -90
-            float physics:upperLimit = 90
+            float physics:lowerLimit = 0
+            float physics:upperLimit = 175
         }
 
         def PhysicsRevoluteJoint "LidFrontJoint" (
             prepend apiSchemas = ["PhysicsDriveAPI:angular"]
         )
         {
-            float drive:angular:physics:damping = 5
+            float drive:angular:physics:damping = 0.0002
             float drive:angular:physics:stiffness = 0
             uniform token drive:angular:physics:type = "force"
             uniform token physics:axis = "Y"
             rel physics:body0 = </World/CardboardBox/Body>
             rel physics:body1 = </World/CardboardBox/LidFront>
-            point3f physics:localPos0 = (-0.16, 0, 0.125)
+            point3f physics:localPos0 = (-0.16, 0, 0.131)
             point3f physics:localPos1 = (-0.5, 0, -0.5)
-            quatf physics:localRot0 = (0.70710677, 0, -0.70710677, 0)
+            quatf physics:localRot0 = (1, 0, 0, 0)
             quatf physics:localRot1 = (1, 0, 0, 0)
-            float physics:lowerLimit = -90
-            float physics:upperLimit = 90
+            float physics:lowerLimit = -175
+            float physics:upperLimit = 0
+        }
+
+        def Cube "LidLeft" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "MaterialBindingAPI", "PhysicsMassAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+            rel material:binding = </World/Looks/cardboard>
+            rel material:binding:physics = </World/Looks/Physics/cardboard> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
+            float physics:mass = 0.02
+            float physxRigidBody:angularDamping = 0.5
+            bool physxRigidBody:enableCCD = 1
+            float physxRigidBody:linearDamping = 0.1
+            float physxRigidBody:maxDepenetrationVelocity = 0.5
+            float physxRigidBody:maxLinearVelocity = 2
+            int physxRigidBody:solverPositionIterationCount = 16
+            int physxRigidBody:solverVelocityIterationCount = 4
+            color3f[] primvars:displayColor = [(0.58, 0.39, 0.18)]
+            double size = 1
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (0.3, 0.12, 0.005)
+            double3 xformOp:translate = (0.4, 0.165, 0.2525)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def Cube "LidRight" (
+            prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsCollisionAPI", "MaterialBindingAPI", "PhysicsMassAPI", "PhysxRigidBodyAPI"]
+        )
+        {
+            float3[] extent = [(-0.5, -0.5, -0.5), (0.5, 0.5, 0.5)]
+            rel material:binding = </World/Looks/cardboard>
+            rel material:binding:physics = </World/Looks/Physics/cardboard> (
+                bindMaterialAs = "weakerThanDescendants"
+            )
+            float physics:mass = 0.02
+            float physxRigidBody:angularDamping = 0.5
+            bool physxRigidBody:enableCCD = 1
+            float physxRigidBody:linearDamping = 0.1
+            float physxRigidBody:maxDepenetrationVelocity = 0.5
+            float physxRigidBody:maxLinearVelocity = 2
+            int physxRigidBody:solverPositionIterationCount = 16
+            int physxRigidBody:solverVelocityIterationCount = 4
+            color3f[] primvars:displayColor = [(0.58, 0.39, 0.18)]
+            double size = 1
+            quatd xformOp:orient = (1, 0, 0, 0)
+            double3 xformOp:scale = (0.3, 0.12, 0.005)
+            double3 xformOp:translate = (0.4, -0.165, 0.2525)
+            uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:orient", "xformOp:scale"]
+        }
+
+        def PhysicsRevoluteJoint "LidLeftJoint" (
+            prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+        )
+        {
+            float drive:angular:physics:damping = 0.0002
+            float drive:angular:physics:stiffness = 0
+            uniform token drive:angular:physics:type = "force"
+            uniform token physics:axis = "X"
+            rel physics:body0 = </World/CardboardBox/Body>
+            rel physics:body1 = </World/CardboardBox/LidLeft>
+            point3f physics:localPos0 = (0, 0.225, 0.125)
+            point3f physics:localPos1 = (0, 0.5, -0.5)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+            float physics:lowerLimit = -175
+            float physics:upperLimit = 0
+        }
+
+        def PhysicsRevoluteJoint "LidRightJoint" (
+            prepend apiSchemas = ["PhysicsDriveAPI:angular"]
+        )
+        {
+            float drive:angular:physics:damping = 0.0002
+            float drive:angular:physics:stiffness = 0
+            uniform token drive:angular:physics:type = "force"
+            uniform token physics:axis = "X"
+            rel physics:body0 = </World/CardboardBox/Body>
+            rel physics:body1 = </World/CardboardBox/LidRight>
+            point3f physics:localPos0 = (0, -0.225, 0.125)
+            point3f physics:localPos1 = (0, -0.5, -0.5)
+            quatf physics:localRot0 = (1, 0, 0, 0)
+            quatf physics:localRot1 = (1, 0, 0, 0)
+            float physics:lowerLimit = 0
+            float physics:upperLimit = 175
         }
     }
 

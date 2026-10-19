@@ -129,3 +129,14 @@
 - 已排除：isaacteleop `ControllerTracker` 取當下快照，不是 FIFO；GUI 的 `_pump` 執行緒持續讀 teleop stdout，管線不會塞住（`Proc.lines` 會整場累積，只佔記憶體）。
 - 觀察：headless 模擬沒有限速（約 260 Hz、220 % 真實時間）；GUI 模式受渲染限制，實際數字未量。CPU governor 為 `powersave`（Isaac 啟動時也警告），可能讓模擬或 IK 後段變慢，尚未證實。
 - 驗證：53 項測試通過（新增 3 項）。未用實際頭盔重跑長時間遙控，「卡頓已消除」尚待使用者以新版跑一次並看 `[timing]` 行確認。
+
+## 紙箱任務場景（2026-10-19，Claude）
+
+- 使用者需求：wrist 相機連桿會晃；箱子要四片蓋（原本只有前後兩片）；箱子在桌面範圍內隨機生成；任務 = 看到箱子 → 移到中間 → 打開四片；箱子要輕但不能一碰就飛。
+- 做法：`dual_arm_sim/setup_box_task_scene.py`（`~/isaac-sim-6.1/python.sh` 執行，原地改 `dual_arm_rig_v2.usda`，可重跑、結果不變；pxr 讀寫此 USD 不會改格式）；隨機擺放在 `run_dual_arm_sim.py` 執行時處理。
+- wrist 相機晃動根因：`xeg32_camera_mount_link` 質量 1e-9 kg、`camera_tilt_joint` 無剛性無阻尼（自由擺）。改為 0.05 kg、慣量 3e-5、角度 drive stiffness 20 N·m/deg、damping 1 N·m·s/deg、目標 0°（`--cam-tilt-deg` 可改），仍為 revolute（DOF 名單不變）。實測 joint1 ±45° 擺動時相機傾角峰對峰：改前 19.35°，改後 0.000°。
+- 箱子：Body 由 kinematic 改為 dynamic、0.4 kg；PhysX：maxDepenetrationVelocity 0.5 m/s、maxLinearVelocity 2 m/s、線阻尼 0.1、角阻尼 0.5、solver 16/4、CCD。物理材質（原本沒有）：紙箱靜/動摩擦 0.6/0.5、桌面 0.5/0.4，回彈 0。
+- 四片蓋：長蓋 LidBack/LidFront（0.157×0.45 m、0.035 kg）抬高 6 mm 疊在新增的短蓋 LidLeft/LidRight（0.30×0.12 m、0.02 kg）上，間隙 1 mm，所以要先開長蓋。鉸鏈：關閉 = 限位 0°（不會掉進箱內），全開 175°（往外翻平；PhysX revolute 限位超過 ±180° 會亂動，265° 時實測短蓋被推開），無彈簧，damping 0.0002 N·m·s/deg（原本 5，相當於 286 N·m·s/rad，蓋子幾乎推不動）。未過垂直放手會倒回關閉，推過垂直會倒向全開。
+- 隨機擺放：每次啟動在桌面內取中心與 yaw（USD 方向 ±30°），四角距桌緣 ≥ 2 cm、中心距桌面中心 ≥ 5 cm；`--box-seed` / `--no-random-box` / `--box-yaw-deg` / `--box-margin` / `--box-min-offset`。執行中 `ros2 topic pub --once /dual_arm/reset_scene std_msgs/msg/Empty "{}"` 重新擺放（全部剛體一起移動、速度歸零、蓋子關閉）；`/dual_arm/box_pose` 發布 Body 位姿（frame world）。桌面中心 (0, −0.663)。
+- 驗證（headless，皆為模擬）：`check_box_task_scene.py` 全部通過 —— 靜置 5 s 漂移 0.00 mm、四蓋 < 0.05°；四蓋 60° 放手回 0°、110° 放手到 175°；側推 0.3 m/s 滑 0.5 cm 不傾倒；壓入桌面 1 cm 的彈出速度 0.25 m/s（上限 0.5）；相機峰對峰 0.000°。20 次 reset 皆直立、在桌面上、靜止。home 姿態手臂最低點 1.196 m 高於箱頂 1.191 m。53 項 unittest 通過。
+- 未驗證：實際用手臂/夾爪推箱子與開蓋的手感（需 Quest 實操）；遠側桌面接近 ReBeL 工作範圍邊緣。錄製尚未在每個 episode 自動 reset 箱子。既有 `ch_v4_*_hold` 固定關節每次啟動警告 "disjointed body transforms"（約 0.2 m z 差），與本次無關、未處理。

@@ -8,6 +8,12 @@ Files (all unchanged copies from `compal_robot` @ `bb76327`, MIT, see `../NOTICE
 | `dual_arm_rig_v2.usda` | v2 rig (frame rebuilt from the 2026-10-04 cable-holes drawing; `dual_arm_rig_v2/dual_arm_rig_v2.usda`), matches `urdf/rebel_dual_arm.urdf.xacro` |
 | `dual_arm_rig_ros2_bridge.py` | Script Editor snippet: ROS 2 bridge action graph (joint states / commands, cameras) |
 | `sim_scene_control.py`, `sim_flap_weld.py` | scene helper services (box/table placement, flap weld) of compal_robot's lid-opening setup |
+| `setup_box_task_scene.py` (ours) | edits `dual_arm_rig_v2.usda` in place for the box task: dynamic 0.4 kg box, 4 flaps, physics materials, wrist cameras held by a drive; re-run after regenerating the rig |
+| `check_box_task_scene.py` (ours) | headless physics check of that scene (rest, flaps, push, penetration, wrist-camera wobble) |
+
+`dual_arm_rig_v2.usda` is **no longer an unchanged copy**: table raised 0.2 m (user edit, 2026-10-19) and `setup_box_task_scene.py` applied.
+`run_dual_arm_sim.py` places the box at a random pose on the table each start (`--box-seed`, `--no-random-box`, ...), re-places it on
+`/dual_arm/reset_scene` (std_msgs/Empty) and publishes `/dual_arm/box_pose`.
 
 ## READ THIS BEFORE USING THEM
 

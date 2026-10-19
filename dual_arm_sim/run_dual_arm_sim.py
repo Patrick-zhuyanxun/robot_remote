@@ -31,6 +31,12 @@ parser.add_argument("--upstream-bridge", action="store_true",
                     help="use compal_robot's dual_arm_rig_ros2_bridge.py instead (1280x800 head + depth + box TF)")
 parser.add_argument("--self-test", action="store_true", help="drive a few joints, print tracking, exit")
 parser.add_argument("--zero-pose", action="store_true", help="start the arms at q = 0 (straight up) instead of the home pose")
+parser.add_argument("--no-random-box", action="store_true", help="leave the cardboard box where the USD has it")
+parser.add_argument("--box-seed", type=int, default=None, help="seed of the random box placement (default: random)")
+parser.add_argument("--box-yaw-deg", type=float, default=30.0, help="random box yaw: +- this around the USD orientation")
+parser.add_argument("--box-margin", type=float, default=0.02, help="box footprint stays this far inside the table edge [m]")
+parser.add_argument("--box-min-offset", type=float, default=0.05,
+                    help="box centre at least this far from the table centre (so there is something to move) [m]")
 args, _ = parser.parse_known_args()
 
 from isaacsim import SimulationApp  # noqa: E402
@@ -73,6 +79,103 @@ for graph in ("/World/DualArmJointBridge", "/World/DualArmCameraBridge"):
     if stage.GetPrimAtPath(graph).IsValid():
         stage.RemovePrim(graph)
         print(f"[dual_arm] removed the {graph} graph saved in {USD.name}; rebuilding it")
+
+
+
+class BoxSpawner:
+    """Random pose of /World/CardboardBox on the table (box task: see the box, move it to the table centre, open
+    its four flaps). The box (Body + 4 flaps, see setup_box_task_scene.py) is placed closed, at rest, fully on
+    the table top with its yaw within +-box_yaw_deg of the USD orientation. Before physics starts the box Xform is
+    moved; while simulating every rigid body is moved together and its velocity zeroed (/dual_arm/reset_scene)."""
+
+    ROOT, TABLE_TOP = "/World/CardboardBox", "/World/table/top"
+    PARTS = ("Body", "LidBack", "LidFront", "LidLeft", "LidRight")
+
+    def __init__(self, stage, args):
+        from pxr import Gf, UsdGeom
+        self.Gf, self.args = Gf, args
+        self.rng = np.random.default_rng(args.box_seed)
+        self.root = UsdGeom.Xformable(stage.GetPrimAtPath(self.ROOT))
+        top = stage.GetPrimAtPath(self.TABLE_TOP)
+        t, sc = np.array(top.GetAttribute("xformOp:translate").Get()), np.array(top.GetAttribute("xformOp:scale").Get())
+        self.table_lo, self.table_hi = t[:2] - sc[:2] / 2, t[:2] + sc[:2] / 2
+        self.table_c, self.z = t[:2], t[2] + sc[2] / 2 + 0.001        # 1 mm above the top: no start penetration
+        q0 = stage.GetPrimAtPath(self.ROOT).GetAttribute("xformOp:orient").Get()
+        self.yaw0 = 2 * np.arctan2(q0.GetImaginary()[2], q0.GetReal())  # USD yaw of the box frame
+        body = stage.GetPrimAtPath(f"{self.ROOT}/Body")
+        self.body_off = np.array(body.GetAttribute("xformOp:translate").Get())  # box centre in the box frame
+        walls = [c for c in body.GetChildren() if c.GetName().endswith("Wall") or "Wall" in c.GetName()]
+        self.half = np.max([np.abs(np.array(c.GetAttribute("xformOp:translate").Get())[:2])
+                            + np.array(c.GetAttribute("xformOp:scale").Get())[:2] / 2 for c in walls], axis=0)
+        self.parts = {}
+        for name in self.PARTS:
+            pr = stage.GetPrimAtPath(f"{self.ROOT}/{name}")
+            if pr.IsValid():
+                o = pr.GetAttribute("xformOp:orient").Get() if pr.HasAttribute("xformOp:orient") else None
+                self.parts[name] = (np.array(pr.GetAttribute("xformOp:translate").Get()),
+                                    np.array([o.GetReal(), *o.GetImaginary()]) if o else np.array([1.0, 0, 0, 0]))
+        self.prims = None
+
+    def sample(self):
+        """(centre xy, yaw) of a box footprint inside the table, at least box_min_offset from its centre."""
+        a = self.args
+        for _ in range(10000):
+            c = self.rng.uniform(self.table_lo, self.table_hi)
+            yaw = self.yaw0 + np.deg2rad(self.rng.uniform(-a.box_yaw_deg, a.box_yaw_deg))
+            r = np.array([[np.cos(yaw), -np.sin(yaw)], [np.sin(yaw), np.cos(yaw)]])
+            corners = c + (r @ (np.array([[1, 1], [1, -1], [-1, 1], [-1, -1]]) * self.half).T).T
+            if (np.all(corners >= self.table_lo + a.box_margin) and np.all(corners <= self.table_hi - a.box_margin)
+                    and np.linalg.norm(c - self.table_c) >= a.box_min_offset):
+                return c, yaw
+        raise RuntimeError("no box pose fits on the table with these --box-* settings")
+
+    def frame(self, c, yaw):
+        """Box-frame origin for a box centre c: the Body sits at body_off in that frame."""
+        r = np.array([[np.cos(yaw), -np.sin(yaw)], [np.sin(yaw), np.cos(yaw)]])
+        return np.array([*(c - r @ self.body_off[:2]), self.z])
+
+    def place_usd(self):
+        c, yaw = self.sample()
+        Gf = self.Gf
+        self.root.GetPrim().GetAttribute("xformOp:translate").Set(Gf.Vec3d(*self.frame(c, yaw)))
+        self.root.GetPrim().GetAttribute("xformOp:orient").Set(Gf.Quatf(float(np.cos(yaw / 2)), 0, 0, float(np.sin(yaw / 2))))
+        return c, yaw
+
+    def _rigid(self):
+        from isaacsim.core.prims import SingleRigidPrim
+        if self.prims is None:
+            self.prims = {n: SingleRigidPrim(f"{self.ROOT}/{n}") for n in self.parts}
+            for pr in self.prims.values():
+                pr.initialize()
+        return self.prims
+
+    def body_pose(self):
+        """World pose of the box Body: position, quaternion (w, x, y, z)."""
+        return self._rigid()["Body"].get_world_pose()
+
+    def reset(self):
+        """While simulating: move all box bodies to a new random pose, closed and at rest."""
+        from scipy.spatial.transform import Rotation
+        self._rigid()
+        c, yaw = self.sample()
+        r_box = Rotation.from_euler("z", yaw)
+        o = self.frame(c, yaw)
+        for name, (t, q_wxyz) in self.parts.items():
+            pos = o + r_box.apply(t)
+            q = (r_box * Rotation.from_quat([*q_wxyz[1:], q_wxyz[0]])).as_quat()
+            pr = self.prims[name]
+            pr.set_world_pose(position=pos, orientation=np.array([q[3], q[0], q[1], q[2]]))
+            pr.set_linear_velocity(np.zeros(3))
+            pr.set_angular_velocity(np.zeros(3))
+        return c, yaw
+
+
+box = None
+if not args.no_random_box and stage.GetPrimAtPath(BoxSpawner.ROOT).IsValid():
+    box = BoxSpawner(stage, args)
+    c, yaw = box.place_usd()
+    print(f"[dual_arm] box at ({c[0]:+.3f}, {c[1]:+.3f}) m, yaw {np.rad2deg(yaw):.0f} deg; table centre "
+          f"({box.table_c[0]:+.3f}, {box.table_c[1]:+.3f}) - publish std_msgs/Empty on /dual_arm/reset_scene for a new pose")
 
 sim = SimulationContext(physics_dt=1 / 120, rendering_dt=1 / 60, stage_units_in_meters=1.0)
 sim.initialize_physics()
@@ -186,10 +289,40 @@ if args.self_test:
     simulation_app.close()
     sys.exit(0)
 
+# /dual_arm/reset_scene (std_msgs/Empty): new random box pose, e.g. between recorded episodes;
+# /dual_arm/box_pose (geometry_msgs/PoseStamped): where the box is now
+reset_node, reset_req = None, []
+if box is not None:
+    try:
+        import rclpy
+        from std_msgs.msg import Empty
+
+        rclpy.init()
+        reset_node = rclpy.create_node("dual_arm_scene")
+        reset_node.create_subscription(Empty, "/dual_arm/reset_scene", lambda _m: reset_req.append(1), 1)
+        from geometry_msgs.msg import PoseStamped
+
+        box_pub = reset_node.create_publisher(PoseStamped, "/dual_arm/box_pose", 10)  # Body centre, frame world
+    except Exception as exc:  # noqa: BLE001  (sim still runs, only the reset topic is missing)
+        print(f"[dual_arm] WARNING: no /dual_arm/reset_scene ({exc})")
+
 print("[dual_arm] running - Ctrl+C to stop")
 try:
     while simulation_app.is_running():
         sim.step(render=True)  # render=True also runs app.update(), which ticks the ROS 2 OmniGraph
+        if reset_node is not None:
+            rclpy.spin_once(reset_node, timeout_sec=0.0)
+            if reset_req:
+                reset_req.clear()
+                c, yaw = box.reset()
+                print(f"[dual_arm] box reset to ({c[0]:+.3f}, {c[1]:+.3f}) m, yaw {np.rad2deg(yaw):.0f} deg")
+            pos, quat = box.body_pose()
+            msg = PoseStamped()
+            msg.header.frame_id = "world"
+            msg.header.stamp = reset_node.get_clock().now().to_msg()
+            msg.pose.position.x, msg.pose.position.y, msg.pose.position.z = map(float, pos)
+            msg.pose.orientation.w, msg.pose.orientation.x, msg.pose.orientation.y, msg.pose.orientation.z = map(float, quat)
+            box_pub.publish(msg)
 except KeyboardInterrupt:
     pass
 simulation_app.close()
