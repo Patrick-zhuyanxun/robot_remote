@@ -32,7 +32,8 @@ parser.add_argument("--upstream-bridge", action="store_true",
                     help="use compal_robot's dual_arm_rig_ros2_bridge.py instead (1280x800 head + depth + box TF)")
 parser.add_argument("--self-test", action="store_true", help="drive a few joints, print tracking, exit")
 parser.add_argument("--zero-pose", action="store_true", help="start the arms at q = 0 (straight up) instead of the home pose")
-parser.add_argument("--no-random-box", action="store_true", help="leave the cardboard box where the USD has it")
+parser.add_argument("--random-box", action="store_true",
+                    help="place the (fixed) box at a random pose on the table at start; default: where the USD has it")
 parser.add_argument("--box-seed", type=int, default=None, help="seed of the random box placement (default: random)")
 parser.add_argument("--box-yaw-deg", type=float, default=30.0, help="random box yaw: +- this around the USD orientation")
 parser.add_argument("--box-margin", type=float, default=0.02, help="box footprint stays this far inside the table edge [m]")
@@ -86,8 +87,8 @@ for graph in ("/World/DualArmJointBridge", "/World/DualArmCameraBridge"):
 class BoxSpawner:
     """Random pose of /World/CardboardBox on the table (box task: see the box, move it to the table centre, open
     its four flaps). The box (Body + 4 flaps, see setup_box_task_scene.py) is placed closed, at rest, fully on
-    the table top with its yaw within +-box_yaw_deg of the USD orientation. Before physics starts the box Xform is
-    moved; while simulating every rigid body is moved together and its velocity zeroed (/dual_arm/reset_scene)."""
+    the table top with its yaw within +-box_yaw_deg of the USD orientation (--random-box, before physics starts).
+    The box body is kinematic (fixed); /dual_arm/reset_scene closes the flaps again."""
 
     ROOT, TABLE_TOP = "/World/CardboardBox", "/World/table/top"
     PARTS = ("Body", "LidBack", "LidFront", "LidLeft", "LidRight")
@@ -154,29 +155,38 @@ class BoxSpawner:
         """World pose of the box Body: position, quaternion (w, x, y, z)."""
         return self._rigid()["Body"].get_world_pose()
 
-    def reset(self):
-        """While simulating: move all box bodies to a new random pose, closed and at rest."""
+    def current(self):
+        """(centre xy, yaw) of the box as the USD places it now."""
+        t = np.array(self.root.GetPrim().GetAttribute("xformOp:translate").Get())
+        q = self.root.GetPrim().GetAttribute("xformOp:orient").Get()
+        yaw = 2 * np.arctan2(q.GetImaginary()[2], q.GetReal())
+        r = np.array([[np.cos(yaw), -np.sin(yaw)], [np.sin(yaw), np.cos(yaw)]])
+        return t[:2] + r @ self.body_off[:2], yaw
+
+    def close_flaps(self):
+        """While simulating: put the four flaps back closed and at rest (the box body is kinematic and stays)."""
         from scipy.spatial.transform import Rotation
         self._rigid()
-        c, yaw = self.sample()
+        c, yaw = self.current()
         r_box = Rotation.from_euler("z", yaw)
         o = self.frame(c, yaw)
         for name, (t, q_wxyz) in self.parts.items():
-            pos = o + r_box.apply(t)
+            if name == "Body":
+                continue
             q = (r_box * Rotation.from_quat([*q_wxyz[1:], q_wxyz[0]])).as_quat()
             pr = self.prims[name]
-            pr.set_world_pose(position=pos, orientation=np.array([q[3], q[0], q[1], q[2]]))
+            pr.set_world_pose(position=o + r_box.apply(t), orientation=np.array([q[3], q[0], q[1], q[2]]))
             pr.set_linear_velocity(np.zeros(3))
             pr.set_angular_velocity(np.zeros(3))
-        return c, yaw
 
 
 box = None
-if not args.no_random_box and stage.GetPrimAtPath(BoxSpawner.ROOT).IsValid():
+if stage.GetPrimAtPath(BoxSpawner.ROOT).IsValid():
     box = BoxSpawner(stage, args)
-    c, yaw = box.place_usd()
-    print(f"[dual_arm] box at ({c[0]:+.3f}, {c[1]:+.3f}) m, yaw {np.rad2deg(yaw):.0f} deg; table centre "
-          f"({box.table_c[0]:+.3f}, {box.table_c[1]:+.3f}) - publish std_msgs/Empty on /dual_arm/reset_scene for a new pose")
+    c, yaw = box.place_usd() if args.random_box else box.current()
+    print(f"[dual_arm] box fixed at ({c[0]:+.3f}, {c[1]:+.3f}) m, yaw {np.rad2deg(yaw):.0f} deg"
+          + (" (random)" if args.random_box else "") + " - only its 4 flaps move; "
+          "publish std_msgs/Empty on /dual_arm/reset_scene to close them again")
 
 sim = SimulationContext(physics_dt=1 / 120, rendering_dt=1 / 60, stage_units_in_meters=1.0)
 sim.initialize_physics()
@@ -290,7 +300,7 @@ if args.self_test:
     simulation_app.close()
     sys.exit(0)
 
-# /dual_arm/reset_scene (std_msgs/Empty): new random box pose, e.g. between recorded episodes;
+# /dual_arm/reset_scene (std_msgs/Empty): close the four flaps again, e.g. between recorded episodes;
 # /dual_arm/box_pose (geometry_msgs/PoseStamped): where the box is now
 reset_node, reset_req = None, []
 if box is not None:
@@ -346,8 +356,8 @@ try:
             rclpy.spin_once(reset_node, timeout_sec=0.0)
             if reset_req:
                 reset_req.clear()
-                c, yaw = box.reset()
-                print(f"[dual_arm] box reset to ({c[0]:+.3f}, {c[1]:+.3f}) m, yaw {np.rad2deg(yaw):.0f} deg")
+                box.close_flaps()
+                print("[dual_arm] box flaps closed")
             pos, quat = box.body_pose()
             msg = PoseStamped()
             msg.header.frame_id = "world"

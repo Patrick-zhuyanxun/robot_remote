@@ -4097,7 +4097,7 @@ def Xform "World"
             rel material:binding:physics = </World/Looks/Physics/cardboard> (
                 bindMaterialAs = "weakerThanDescendants"
             )
-            bool physics:kinematicEnabled = 0
+            bool physics:kinematicEnabled = 1
             float physics:mass = 0.4
             float physxRigidBody:angularDamping = 0.5
             bool physxRigidBody:enableCCD = 1

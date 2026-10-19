@@ -4,9 +4,8 @@
 
 1. rest:   5 s untouched -> box drift [mm], flap angles [deg]
 2. flaps:  each flap set 60 deg open -> must fall back closed; 110 deg -> must fall fully open
-3. push:   box given 0.3 m/s sideways -> slides, stops on the table, stays upright
-4. penetration: box pushed 1 cm into the table -> ejection speed must stay at the 0.5 m/s cap
-5. camera: arm_left_joint1 swung +-45 deg -> wrist camera tilt joint wobble [deg]
+3. fixed:  the box body is kinematic and must not move
+4. camera: arm_left_joint1 swung +-45 deg -> wrist camera tilt joint wobble [deg]
 """
 import argparse
 from pathlib import Path
@@ -149,34 +148,14 @@ for n in ("LidBack", "LidFront", "LidLeft", "LidRight"):
 p_b, _ = pose(body)
 report(np.linalg.norm(p_b - p_b0) < 0.01, f"flap tests moved the box {np.linalg.norm(p_b - p_b0) * 1e3:.1f} mm")
 
-# 3. push
-p_b0, r_b0 = pose(body)
+# 3. fixed box: a velocity kick must not move the kinematic body
+p_b0, _ = pose(body)
 body.set_linear_velocity(np.array([0.3, 0.0, 0.0]))
-step(2.0)
-p_b, r_b = pose(body)
-tilt = np.rad2deg(np.arccos(np.clip(r_b.apply([0, 0, 1])[2], -1, 1)))
-slid = np.linalg.norm(p_b[:2] - p_b0[:2])
-v = np.linalg.norm(body.get_linear_velocity())
-report(0.005 < slid < 0.1 and tilt < 3 and v < 0.01 and abs(p_b[2] - p_b0[2]) < 0.005,
-       f"push 0.3 m/s: slid {slid * 100:.1f} cm, tilt {tilt:.1f} deg, final speed {v * 1e3:.1f} mm/s, "
-       f"height change {(p_b[2] - p_b0[2]) * 1e3:+.1f} mm")
+step(1.0)
+p_b, _ = pose(body)
+report(np.linalg.norm(p_b - p_b0) < 1e-4, f"box body is fixed (moved {np.linalg.norm(p_b - p_b0) * 1e3:.2f} mm)")
 
-# 4. penetration (what a stiff arm pressing into the box does): 1 cm into the table -> ejection speed
-p_b, r_b = pose(body)
-for pr in [body] + [f[0] for f in flaps.values()]:
-    p, r = pose(pr)
-    set_pose(pr, p - [0, 0, 0.01], r)
-peak, last = 0.0, pose(body)[0]
-for _ in range(60):  # TGS removes penetration as a position bias, so measure the speed from the motion
-    sim.step(render=False)
-    now = pose(body)[0]
-    peak, last = max(peak, float(np.linalg.norm(now - last)) * 60), now
-step(2.0)
-p_e, _ = pose(body)
-report(peak <= 0.6 and abs(p_e[2] - p_b[2]) < 0.003, f"1 cm penetration: peak ejection speed {peak:.2f} m/s "
-       f"(cap 0.5), settles {(p_e[2] - p_b[2]) * 1e3:+.1f} mm from rest height")
-
-# 5. wrist camera
+# 4. wrist camera
 report(camera_test() < 0.5, "wrist camera tilt stays put (< 0.5 deg peak-to-peak)")
 print(f"[check] {'ALL PASS' if ok else 'SOME CHECKS FAILED'}", flush=True)
 app.close()

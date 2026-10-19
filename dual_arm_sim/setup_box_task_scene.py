@@ -7,7 +7,8 @@ Edits the USD in place and is safe to re-run (also after the rig is regenerated 
    (stiffness 0, damping 0), so the camera swung with every arm motion. Now 0.05 kg with a sane inertia and
    a stiff position drive holding the tilt at --cam-tilt-deg (default 0). Still a revolute joint (keeps the
    DOF list; the real mount is adjustable).
-2. Box: dynamic instead of kinematic, 0.4 kg, cardboard / table friction, launch-proof contact settings.
+2. Box body: kinematic (fixed in place, the arms cannot push or drag it; user decision 2026-10-19), cardboard /
+   table friction. Only the four flaps move.
 3. Flaps: the two long (major) flaps plus two new short (minor) flaps on the end walls. Minor flaps lie
    below the major ones (1 mm gap), like a real box: open the major flaps first. Each hinge: closed = joint
    limit 0 (cannot fall into the box), fully open = 175 deg (folded back outward; PhysX revolute limits beyond
@@ -133,8 +134,8 @@ cardboard_phys, table_phys = physics_material("cardboard", CARDBOARD), physics_m
 for leg in ("top", "leg_0", "leg_1", "leg_2", "leg_3"):
     bind_physics(stage.GetPrimAtPath(f"/World/table/{leg}"), table_phys)
 body = stage.GetPrimAtPath(BODY)
-UsdPhysics.RigidBodyAPI(body).CreateKinematicEnabledAttr(False)
-rigid_settings(body, BOX_MASS)
+UsdPhysics.RigidBodyAPI(body).CreateKinematicEnabledAttr(True)   # was dynamic 0.4 kg: it got dragged along by the arm
+rigid_settings(body, BOX_MASS)  # mass only matters if the body is made dynamic again
 bind_physics(body, cardboard_phys)
 
 # ---------------------------------------------------------------- 3. four flaps (Box frame = Body + (0.4, 0, 0.125))
@@ -157,5 +158,5 @@ for name in ("LidBack", "LidFront", "LidLeft", "LidRight"):
     bind_physics(stage.GetPrimAtPath(f"{BOX}/{name}"), cardboard_phys)
 
 stage.GetRootLayer().Save()
-print(f"[scene] saved {args.usd.name}: box {BOX_MASS} kg dynamic, 4 flaps, materials, wrist cameras", flush=True)
+print(f"[scene] saved {args.usd.name}: box fixed (kinematic), 4 flaps, materials, wrist cameras", flush=True)
 app.close()

@@ -170,3 +170,4 @@
 - 無效或更糟、不要採用的變體：關相機支架碰撞（改由 xeg32_base_link 勾住）、maxDepenetrationVelocity 10、contactOffset 2 cm、手臂驅動剛性降為 1500、鉸鏈軟限位（PhysxLimitAPI k 0.05／1：蓋子被翻到 45–125°，一次把箱子抬高 7 cm）、全開限位 110°（立起的蓋子被手臂掃到）。
 - 測試陷阱：IK 軌跡第一步若直接要求夾爪朝下，關節會在一幀內轉 86°，手臂甩過箱子，看起來像「沒接觸就動」。改為姿態 slerp、每幀關節 < 1.6°。手指目標未設定時停在 0（半閉），會夾住 6 mm 牆。
 - 下一步：請使用者重現時錄 `ros2 bag record /quest_teleop/action /dual_arm/isaac_joint_states /dual_arm/box_pose /quest_teleop/state -o logs/sticky_box`，用實際命令在 headless 重播並看接觸對；並確認當時蓋子是否已打開。
+- **使用者決定（2026-10-19）：箱子固定不動，只有四片蓋子可開合**，以避開箱子被手臂拖動等問題。`setup_box_task_scene.py` 把 Body 設為 kinematic（已套用到 USD）；`run_dual_arm_sim.py` 預設箱子在 USD 位置 (0, −0.55)，`--random-box` 才在啟動時隨機擺放；`/dual_arm/reset_scene` 改為把四片蓋子關回去。驗證：`check_box_task_scene.py` 全過（箱身 0.00 mm）；先前會拖動箱子的四種手臂軌跡（側推、壓牆緣、壓蓋子、從開蓋下方推）箱身位移全為 0；reset 實測關閉蓋子。蓋子仍可能被手臂撐住或勾起（屬開合動作）。
