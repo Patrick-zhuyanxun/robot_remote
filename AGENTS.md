@@ -161,3 +161,12 @@
 - teleop `[timing]` 的 ik 區段拆出 `solve`（IK 解算本身，兩臂合計，含 max）與 `guard`（兩臂碰撞檢查），並記錄主執行緒所在 CPU。用來判斷先前 40–60 ms 的尖峰是 IK、guard 還是其他。
 - 驗證：53 項測試通過；pinning 以子程序讀 `Cpus_allowed_list` 確認。尚未在實機操作下看到新的 log。
 - 修正（2026-10-19）：teleop 啟動後握持即崩潰 `ValueError: Logger severity cannot be changed between calls.` —— `[timing]` 用同一行 `(log.warning if bad else log.info)(line)`，rclpy 不允許同一呼叫位置改變嚴重度，第一次由 WARN 轉 INFO 就丟例外。改為 `log_timing()` 兩個呼叫位置，新增回歸測試（舊寫法重現該錯誤），54 項測試通過。
+
+## 箱子黏在手臂上：排查紀錄（2026-10-19，Claude；未修改場景）
+
+- 使用者回報：推箱子後手臂離開，箱子跟著手臂走。Codex 調查已依使用者要求取消，未改動專案。
+- headless 重現（PhysX contact report，左臂夾爪朝下、手指全開 = teleop 未按 trigger）：**側推後收回不會黏**（推 7.7 cm、收回只滑 0.7 cm、不跟隨，所有變體皆同）。
+- 會拖動箱子的情境：(1) 夾爪被命令壓進已關閉的蓋子 2.5–3 cm（箱在桌上無處可退，15000 N·m/deg 的位置驅動等於無限大的力 → 穿過 5 mm 蓋子、被蓋子從下方勾住）；(2) **長蓋開到 175° 時是一片在箱頂高度、朝手臂伸出 16 cm 的硬棚板**，從棚板下推牆再離開時，夾爪／手肘勾住棚板（contact：LidBack↔夾爪、LidFront↔motor3），箱子被拖 3–4 cm。
+- 無效或更糟、不要採用的變體：關相機支架碰撞（改由 xeg32_base_link 勾住）、maxDepenetrationVelocity 10、contactOffset 2 cm、手臂驅動剛性降為 1500、鉸鏈軟限位（PhysxLimitAPI k 0.05／1：蓋子被翻到 45–125°，一次把箱子抬高 7 cm）、全開限位 110°（立起的蓋子被手臂掃到）。
+- 測試陷阱：IK 軌跡第一步若直接要求夾爪朝下，關節會在一幀內轉 86°，手臂甩過箱子，看起來像「沒接觸就動」。改為姿態 slerp、每幀關節 < 1.6°。手指目標未設定時停在 0（半閉），會夾住 6 mm 牆。
+- 下一步：請使用者重現時錄 `ros2 bag record /quest_teleop/action /dual_arm/isaac_joint_states /dual_arm/box_pose /quest_teleop/state -o logs/sticky_box`，用實際命令在 headless 重播並看接觸對；並確認當時蓋子是否已打開。
