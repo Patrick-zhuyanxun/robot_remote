@@ -39,6 +39,7 @@ DEFAULTS = {
     "sim_rviz": True,  # sim: RViz with Isaac arms vs teleop commands + Quest controllers + lag panel
     "rot_frame": "tool",  # Quest hand rotation applied about the tool's own axes, or about the fixed base axes
 }
+RESET_COLOR = "#ff7b72"  # Y button (scene reset) in the controller legend
 FRAME_TEXT = {"tool": "Rotation: TOOL frame  (click: base)", "base": "Rotation: BASE frame  (click: tool)"}
 C = {"bg": "#1f2329", "panel": "#2a2f37", "fg": "#e8e8e8", "dim": "#9aa3ad", "accent": "#4ea1ff",
      "ok": "#3fb950", "warn": "#d29922", "err": "#f85149", "rec": "#ff3b30"}
@@ -356,25 +357,27 @@ class App(tk.Tk):
     def _legend(self, parent):
         cv = tk.Canvas(parent, width=400, height=560, bg=C["panel"], highlightthickness=0)
 
-        def controller(cx, title, top, bottom):
+        def controller(cx, title, top, bottom, bottom_color="#d2a8ff"):
             cv.create_text(cx, 22, text=title, fill=C["fg"], font=("DejaVu Sans", 12, "bold"))
             cv.create_oval(cx - 70, 40, cx + 70, 150, outline="#8b949e", width=3)        # tracking ring
             cv.create_rectangle(cx - 28, 110, cx + 28, 270, outline="#8b949e", width=3)   # handle
             cv.create_oval(cx - 45, 70, cx + 45, 130, fill="#30363d", outline="#8b949e", width=2)  # face
             cv.create_oval(cx - 30, 78, cx - 6, 102, fill="#58a6ff", outline="")          # face button 1
             cv.create_text(cx - 18, 90, text=top[0], fill="white", font=("Arial", 11, "bold"))
-            cv.create_oval(cx + 6, 92, cx + 30, 116, fill="#d2a8ff", outline="")          # face button 2
+            cv.create_oval(cx + 6, 92, cx + 30, 116, fill=bottom_color, outline="")       # face button 2
             cv.create_text(cx + 18, 104, text=bottom[0], fill="white", font=("Arial", 11, "bold"))
             cv.create_rectangle(cx - 33, 150, cx - 22, 210, fill=C["ok"], outline="")       # grip
             cv.create_polygon(cx + 28, 120, cx + 44, 132, cx + 30, 160, fill=C["warn"], outline="")  # trigger
 
-        controller(105, "Left -> left arm", ("X",), ("Y",))
+        controller(105, "Left -> left arm", ("X",), ("Y",), RESET_COLOR)
         controller(295, "Right -> right arm", ("A",), ("B",))
         items = [
             (C["ok"], "Grip (middle finger) - hold", "the arm follows your hand; release = freeze.\nRelease, reposition your hand, grip again - the arm does not jump"),
             (C["warn"], "Trigger (index finger)", "closes the gripper (deeper = tighter)"),
             ("#58a6ff", "A / X", "start recording -> press again to save the episode"),
-            ("#d2a8ff", "B / Y", "discard the current episode and re-record"),
+            ("#d2a8ff", "B (right)", "discard the current episode and re-record"),
+            (RESET_COLOR, "Y (left) - reset scene", "sim: both arms go home, grippers open, box flaps close;\n"
+                                                   "an open episode is discarded. Then A/X records the next one"),
             ("#8b949e", "Rotate the controller", "twist the handle = spin the tool; nod = tilt the tool"),
         ]
         y = 300
