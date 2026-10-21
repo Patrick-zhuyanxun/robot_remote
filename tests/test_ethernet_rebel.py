@@ -1,4 +1,7 @@
 """Socket-level tests against two local fake controllers. Never contacts real hardware."""
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent))
+import ros_isolation  # noqa: E402,F401  - FIRST: never share the robot's ROS graph
 import math
 from pathlib import Path
 import socket

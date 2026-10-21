@@ -1,4 +1,7 @@
 """Launcher run page: the rotation-frame button talks to the running teleop over its stdin (hidden Tk window)."""
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent))
+import ros_isolation  # noqa: E402,F401  - FIRST: never share the robot's ROS graph
 import json
 import os
 from pathlib import Path
@@ -30,7 +33,8 @@ class FrameButtonTests(unittest.TestCase):
 
     def test_toggle_sends_command_and_follows_confirmation(self):
         with tempfile.TemporaryDirectory() as d, patch.object(gui, "CONFIG", Path(d) / "launcher.json"), \
-                patch.object(gui, "LOG_DIR", Path(d)):
+                patch.object(gui, "LOG_DIR", Path(d)), \
+                patch.object(gui, "LATEST_DIR", Path(d) / "latest"):
             app = gui.App()
             app.withdraw()
             try:
@@ -51,6 +55,32 @@ class FrameButtonTests(unittest.TestCase):
             finally:
                 for p in app.procs.values():
                     p.kill()
+                app.destroy()
+            self.assertIn("rotation frame", (Path(d) / "latest" / "teleop.log").read_text())  # newest-session copy
+
+    def test_real_target_records_with_usb_cameras(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(gui, "CONFIG", Path(d) / "launcher.json"), \
+                patch.object(gui, "LOG_DIR", Path(d)):
+            app = gui.App()
+            app.withdraw()
+            try:
+                app.v_target.set("real")
+                app.update()
+                states = lambda ws: {str(w["state"]) for w in ws if "state" in w.keys()}  # noqa: E731
+                self.assertEqual(states(app.real_only_widgets), {"normal"})
+                self.assertEqual(states(app.sim_only_widgets), {"disabled"})
+                app.v_record.set(True)
+                app.v_root.set(d)  # a fresh location (the default name may already hold a sim dataset)
+                for k, v in app.v_real_cams.items():
+                    v.set(k != "knife")
+                cfg = app._collect()
+                self.assertTrue(cfg["record"])
+                self.assertEqual(cfg["real_cameras"], [k for k, _ in gui.REAL_CAMERAS if k != "knife"])
+                app.v_target.set("isaac")
+                app.update()
+                self.assertEqual(states(app.real_only_widgets), {"disabled"})
+                self.assertEqual(states(app.sim_only_widgets) - {"readonly"}, {"normal"})
+            finally:
                 app.destroy()
 
 

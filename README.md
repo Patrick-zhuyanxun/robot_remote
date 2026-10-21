@@ -2,7 +2,8 @@
 
 Teleoperate the dual-arm igus ReBeL rig in **Isaac Sim 6.1** with a **Meta Quest 3/3S** and record
 **LeRobot v3.0** datasets for VLA training. Two physical ReBeL arms can also be connected directly
-over wired Ethernet (CRI + Position Interface); physical grippers and real-episode recording are not implemented.
+over wired Ethernet (igus ROS driver) and recorded with four USB cameras (see *Real-robot recording*); physical
+grippers are not implemented.
 
 **Codex / Claude shared context:** read [`AGENTS.md`](AGENTS.md) first (`CLAUDE.md` links to the same file).
 
@@ -12,31 +13,30 @@ Troubleshooting, Real robot.
 
 ## Install (new machine)
 
-**With a coding agent:** tell it *"Install robot_remote on this machine by following [AGENT_INSTALL.md](AGENT_INSTALL.md)"*.
-It runs the steps below, checks each one, and asks you to run the `sudo` parts.
-
-Ubuntu 22.04, NVIDIA RTX GPU (driver 580+), ROS 2 Humble, about 40 GB free. Details for each step are in the manual's Install page.
+Ubuntu 22.04, NVIDIA driver 580+, about 40 GB free (about 15 GB without Isaac Sim).
 
 ```bash
-# 1. ROS 2 Humble (https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html) + extras
-sudo apt install -y ros-humble-desktop ros-humble-xacro python3-colcon-common-extensions python3-rosdep python3-tk \
-  ros-humble-moveit ros-humble-moveit-servo \
-  ros-humble-moveit-task-constructor-capabilities ros-humble-moveit-task-constructor-visualization
-# 2. uv
-curl -LsSf https://astral.sh/uv/install.sh | sh
-# 3. this repo
-git clone https://github.com/Patrick-zhuyanxun/robot_remote.git ~/robot_remote && cd ~/robot_remote   # all commands below run from here
-# 4. Isaac Sim 6.1 -> ~/isaac-sim-6.1 (or export ISAAC_SIM=...)
-curl -L -o ~/Downloads/isaac-sim-6.1.0.zip https://downloads.isaacsim.nvidia.com/isaac-sim-standalone-6.1.0-linux-x86_64.zip
-mkdir -p ~/isaac-sim-6.1 && unzip -q ~/Downloads/isaac-sim-6.1.0.zip -d ~/isaac-sim-6.1
-# 5-7. ROS workspace (clone + patch + build), Quest env (+ CloudXR EULA), recorder env
-./setup/install_ros_ws.sh
-./setup/install_quest_env.sh
-.venv_quest/bin/python -m isaacteleop.cloudxr --accept-eula   # read and accept once per machine
-./setup/install_record_env.sh      # or: export LEROBOT_PY=<your lerobot 0.5.x python>
-# 8. check
-./setup/check_env.sh
+git clone https://github.com/Patrick-zhuyanxun/robot_remote.git ~/robot_remote && cd ~/robot_remote
+./setup/install.sh
 ```
+
+The installer first **lists what is already on the machine with versions** (`./setup/install.sh --detect` shows only that), then **asks in plain text what to install**, shows the plan, then does it (it never runs `sudo` itself: if apt
+packages are missing it prints the commands and stops, you run them and start it again; the workspace build's `rosdep` may still ask for your password for missing apt packages):
+
+| Question | Why it matters |
+| --- | --- |
+| Isaac Sim 6.1: download (about 9 GB) / already in another folder / skip | Runs the simulation **and** is needed to record datasets, real robot included (the recorder borrows its rclpy). Skip only for teleop of the real arms without recording. |
+| Recorder: new `.venv_record` / my own LeRobot 0.5.x python / skip | Writes, replays and shows datasets. |
+| Legacy single-arm iRC_ROS packages | Only for the demos in `igus_rebel_sim/`. Default no. |
+
+Always installed: ROS 2 workspace `igus_ws`, Quest teleop environment `.venv_quest`, CloudXR runtime (its licence is
+accepted by you: the installer prints the command). Options for scripts and agents: `./setup/install.sh --help`
+(for example `--isaac skip --record skip --no-irc`, `--dry-run` to see the plan only). The choices are saved in
+`config/install_profile.env`; `./setup/check_env.sh` follows them.
+
+**With a coding agent:** tell it *"Install robot_remote on this machine by following [AGENT_INSTALL.md](AGENT_INSTALL.md)"*.
+It first runs `--detect` and reports what is installed (and which versions are unusable), asks only what is still open, runs the installer with your answers and asks you to run the `sudo` parts.
+Manual step-by-step commands are on the Install page of the manual.
 
 ## Quick start (GUI)
 
@@ -54,7 +54,12 @@ mkdir -p ~/isaac-sim-6.1 && unzip -q ~/Downloads/isaac-sim-6.1.0.zip -d ~/isaac-
    (tool = about the tool's own axes, base = about the fixed arm-base axes; translation always follows the base axes).
    It takes effect when an arm is next gripped (`--rot-frame`, or topic `/quest_teleop/set_rot_frame` "tool"/"base").
 
-New datasets go to `robot_remote/datasets/` by default (the GUI and `ROBOT_REMOTE_DATASETS` can override this).
+New datasets go to `robot_remote/dataset/` by default (the GUI and `ROBOT_REMOTE_DATASETS` can override this).
+Under the save location the launcher shows what Start will do with `<location>/<name>` and blocks what cannot work:
+new name or empty folder → new dataset; an existing dataset → episodes are appended only if it has the same
+source (sim / real), fps, cameras and image size; a dataset that never saved an episode → re-created; an incomplete
+dataset (recorder killed) or a folder that is not a dataset → refused, nothing is written or deleted. **Browse...** on a
+dataset folder itself selects it for continuing (save location = its parent, name = its folder).
 Settings live in `config/launcher.json`, physical endpoints in `config/real_arms.json`, and logs in `logs/`.
 Old launcher settings are copied into the project on first use; the former default `~/datasets` is replaced
 with the project default for future sessions. Existing datasets are left in place; custom dataset paths are preserved.
@@ -69,7 +74,8 @@ with the project default for future sessions. Existing datasets are left in plac
 | Nod / tilt the controller | Tool tilts about its own X / Y axes. |
 | Trigger (index finger) | Gripper closes proportionally (0 = open, 1 = closed). |
 | A or X | Start recording → press again to save the episode. |
-| B or Y | Discard the current episode. |
+| B | Discard the current episode. |
+| Y (left) | Reset the scene (simulation only): arms home, grippers open, box flaps closed; an open episode is discarded. |
 
 Left controller drives the left arm, right controller the right arm. "Facing the robot" in the GUI
 mirrors the mapping (`--yaw-deg 180 --swap-hands`).
@@ -91,7 +97,7 @@ Quest 3/3S ──Wi-Fi/WebRTC──► CloudXR runtime ─┐
                             ▼
               record_dataset.py (.venv_record: lerobot 0.5.1, Isaac's py3.12 rclpy)
                             ▼
-              robot_remote/datasets/<name>/   LeRobotDataset v3.0
+              robot_remote/dataset/<name>/    LeRobotDataset v3.0
 ```
 
 All launchers source `ros_env.sh` (**ROS_DOMAIN_ID=42, ROS_LOCALHOST_ONLY=1**). Another machine on the
@@ -110,14 +116,41 @@ recordings. Run `source ./ros_env.sh` before any manual `ros2 …` command.
 Frames are sampled every 1/fps of **simulation time** (`/clock`), so timestamps match the simulated
 motion even though Isaac runs below real time (≈0.5× with three cameras).
 
+## Real-robot recording
+
+In the launcher pick **Real igus ReBeL arms**, tick **Record** and the real cameras, then Start: drivers → teleop →
+recorder (`run_record.sh --source real`) → RViz. Terminal equivalent, after the drivers and
+`run_quest_real_arm.sh` are running: `recording/run_record.sh --source real --name N --task "…" [--cameras …]`.
+
+| Feature | Real-robot content |
+| --- | --- |
+| `observation.state` | arm joints from `/{left,right}/joint_states` (igus drivers); a one-arm session takes the other arm's assumed pose from `/quest_teleop/joint_states`. Gripper slots = 0 (no physical gripper). |
+| `action` | `/quest_teleop/action` (commanded joints; gripper slots = Quest trigger, operator intent only) |
+| `observation.images.wrist_left` / `wrist_right` / `head` / `knife` | USB cameras of `config/real_cameras.json`, 640×480 RGB, read in the recorder process (`recording/real_cameras.py`) |
+| robot_type | `igus_rebel_dual_arm_real` (a dataset is never mixed with sim episodes or other cameras: the recorder refuses) |
+
+Sampling clock = wall time. Y discards the open episode and moves both real arms home at 10°/s (any Quest button or grip, or Stop all, stops them; dry run: no motion); B only discards.
+Stop all saves an open episode **before** the arms return to 0°.
+
+Cameras (`recording/run_cameras.sh --list | --snapshot | --test 10`): the Orbbecs are found by serial + colour
+interface (any port); the two ARC wrist cameras have no serial and are found by **USB port** — keep them in their ports
+or update `usb_port` in the config. **Cabling:** a USB 3 hub is two hubs in one (here Genesys 05e3:0626 on the
+5 Gbit/s bus + 05e3:0610 on the 480 Mbit/s bus); USB 2 devices such as the ARC cameras always use the shared 480 Mbit/s
+half. Working setup (2026-10-21, 30 s test: ARC ~47 decoded fps each, Orbbecs 30 fps): all four on one USB 3 hub on a
+USB 3 PC port, `--list` showing both Orbbecs at 5000 Mbit/s. When the hub sat on a USB 2-only port all four shared
+480 Mbit/s: the second ARC got "Not enough bandwidth for altsetting" and the Gemini 336 kept resetting (error -71).
+
 ## Tools
 
 | Script | Purpose |
 | --- | --- |
+| `setup/install.sh` | Asks what to install (Isaac Sim, recorder, legacy packages), then installs; `setup/check_env.sh` checks the result. |
 | `launcher/run_gui.sh` | Settings window + process manager (recommended entry point). |
 | `dual_arm_sim/run_dual_arm_sim.sh [--cameras head wrist_left wrist_right] [--headless]` | Isaac Sim rig + ROS 2 bridge. Do not source `/opt/ros` in this terminal. |
 | `quest_teleop/run_quest_dual_arm.sh [--arms left right] [--yaw-deg 180 --swap-hands]` | Quest → both arms, direct to Isaac. |
-| `recording/run_record.sh --name N --task "…"` | Recorder. Keyboard fallback: Enter = start/save, d = discard, q = quit. |
+| `recording/run_record.sh --name N --task "…" [--source real]` | Recorder. Keyboard fallback: Enter = start/save, d = discard, q = quit. |
+| `latest_run/` | Newest session only, emptied on every launcher Start: `<process>.log` copies and `teleop_trace.csv` (per tick and arm: Quest hand, grip, target, IK, joint command sent, measured joints, lag, which limit acted, log messages). Terminal runs overwrite the trace too (`--trace ''` = off). Timestamped logs stay in `logs/`. |
+| `recording/run_cameras.sh --list / --snapshot / --test 10` | Real rig USB cameras: find nodes, save one JPEG per configured camera (`logs/camera_snapshots/`), measure fps together. |
 | `launcher/run_replay_gui.sh [dataset folder]` | Playback window: choose a dataset folder + episode, then **View** (LeRobot viewer / Rerun) or **Replay in Isaac**. |
 | `recording/run_replay.sh --path <dataset folder> --episode K` | Replays recorded actions into Isaac and compares with recorded states (alignment check). |
 | `quest_teleop/run_teleop_viz.sh` | RViz view of the teleop frames (arm bases, control point, hand-motion axes). |
@@ -230,8 +263,8 @@ These software checks are not a safety controller; keep a person at the hardware
 
 The existing point-distance guard uses the simulated rig's base/tool geometry. Physical base poses, TCPs,
 joint zero conventions and controller directions require on-site validation before meaningful motion.
-It is not a full stand/table/self-collision checker. Physical gripper control, cameras and real recordings
-remain unsupported.
+It is not a full stand/table/self-collision checker. Physical gripper control remains unsupported (real
+cameras and real recording are on the igus ROS driver path, see *Real-robot recording*).
 
 **Verified 2026-10-15:** both controllers answered read-only CRI queries, reporting RobotControl
 `V980-15-000-2` and Position Interface port 3940. Left: no joint errors; right: `_MNE` / `KINSTATE 99`
@@ -251,7 +284,7 @@ python3 -m unittest discover -s tests -v
 ## Known limitations
 
 - The wrist-camera images are half black: the gripper/camera-mount geometry in the upstream USD occludes the lens.
-- The inter-arm guard (12 cm) only checks arm vs arm (wrist, flange, jaw, knife points), not the stand.
+- The inter-arm guard (5 cm between capsule surfaces) only checks arm vs arm, not the stand, table, cameras or box.
 - Wrist pitch is limited to about ±40° from home by joint 5.
 - Not yet verified with a real headset end to end: gripper channel in a recorded episode, the left controller,
   and the A/B/X/Y buttons driving the launcher.

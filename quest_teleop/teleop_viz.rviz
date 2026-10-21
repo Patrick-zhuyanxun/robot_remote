@@ -21,8 +21,8 @@ Visualization Manager:
       Enabled: true
       Description Source: Topic
       Description Topic:
-        Value: /left/robot_description
-      TF Prefix: left
+        Value: /viz_left/robot_description
+      TF Prefix: viz_left
       Alpha: 1
       Visual Enabled: true
       Collision Enabled: false
@@ -31,8 +31,8 @@ Visualization Manager:
       Enabled: true
       Description Source: Topic
       Description Topic:
-        Value: /right/robot_description
-      TF Prefix: right
+        Value: /viz_right/robot_description
+      TF Prefix: viz_right
       Alpha: 1
       Visual Enabled: true
       Collision Enabled: false
@@ -65,37 +65,37 @@ Visualization Manager:
     - Class: rviz_default_plugins/Axes
       Name: left base_link (IK frame)
       Enabled: true
-      Reference Frame: left/base_link
+      Reference Frame: viz_left/base_link
       Length: 0.15
       Radius: 0.008
     - Class: rviz_default_plugins/Axes
       Name: right base_link (IK frame)
       Enabled: true
-      Reference Frame: right/base_link
+      Reference Frame: viz_right/base_link
       Length: 0.15
       Radius: 0.008
     - Class: rviz_default_plugins/Axes
       Name: left control point (rotates)
       Enabled: true
-      Reference Frame: left/control_tcp
+      Reference Frame: viz_left/control_tcp
       Length: 0.10
       Radius: 0.008
     - Class: rviz_default_plugins/Axes
       Name: right control point (rotates)
       Enabled: true
-      Reference Frame: right/control_tcp
+      Reference Frame: viz_right/control_tcp
       Length: 0.10
       Radius: 0.008
     - Class: rviz_default_plugins/Axes
       Name: left hand translation dirs (never rotate)
       Enabled: true
-      Reference Frame: left/hand_axes
+      Reference Frame: viz_left/hand_axes
       Length: 0.10
       Radius: 0.003
     - Class: rviz_default_plugins/Axes
       Name: right hand translation dirs (never rotate)
       Enabled: true
-      Reference Frame: right/hand_axes
+      Reference Frame: viz_right/hand_axes
       Length: 0.10
       Radius: 0.003
     - Class: rviz_default_plugins/Axes
@@ -125,7 +125,7 @@ Visualization Manager:
       Name: left teleop target
       Enabled: true
       Topic:
-        Value: /quest_teleop/left/target
+        Value: /teleop_viz/left/target
       Shape: Axes
       Axes Length: 0.08
       Axes Radius: 0.006
@@ -133,7 +133,7 @@ Visualization Manager:
       Name: right teleop target
       Enabled: true
       Topic:
-        Value: /quest_teleop/right/target
+        Value: /teleop_viz/right/target
       Shape: Axes
       Axes Length: 0.08
       Axes Radius: 0.006

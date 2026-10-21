@@ -1,0 +1,11 @@
+{
+  "_comment": "Real rig USB cameras -> observation.images.<key> (recording/real_cameras.py). Orbbecs by serial + colour interface; the ARC wrist cameras have no serial, so by USB port (re-check with recording/run_cameras.sh --list / --snapshot after re-cabling). ARC 640x480 MJPG exists only at 120 fps: decoded at <= 60 fps. Mapping confirmed by the user 2026-10-21: ARC @ 1-3.1 = right wrist, ARC @ 1-3.3 = left wrist, Gemini 305 = knife camera on the left arm.",
+  "wrist_left":  {"label": "Left wrist (ARC USB camera)",  "usb_port": "1-3.3", "usb_id": "05a3:9230",
+                  "fourcc": "MJPG", "width": 640, "height": 480, "fps": 120, "decode_fps": 60},
+  "wrist_right": {"label": "Right wrist (ARC USB camera)", "usb_port": "1-3.1", "usb_id": "05a3:9230",
+                  "fourcc": "MJPG", "width": 640, "height": 480, "fps": 120, "decode_fps": 60},
+  "head":        {"label": "Third-person, middle (Orbbec Gemini 336 colour)", "serial": "CP96563000LY", "interface": 4,
+                  "fourcc": "MJPG", "width": 640, "height": 480, "fps": 30},
+  "knife":       {"label": "Knife close-up, left arm (Orbbec Gemini 305 colour)", "serial": "CV27561000GA", "interface": 4,
+                  "fourcc": "MJPG", "width": 640, "height": 480, "fps": 30}
+}

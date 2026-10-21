@@ -1,9 +1,13 @@
 """Run with the sourced Quest / ROS environment for ROS-node integration coverage."""
+import sys as _sys, pathlib as _pl
+_sys.path.insert(0, str(_pl.Path(__file__).resolve().parent))
+import ros_isolation  # noqa: E402,F401  - FIRST: never share the robot's ROS graph
 import io
 from pathlib import Path
 import sys
 import time
 import unittest
+import os
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "quest_teleop"))
@@ -576,6 +580,39 @@ class NodeIntegrationTests(unittest.TestCase):
             for n in (node, fake):
                 if n:
                     n.destroy_node()
+            rclpy.try_shutdown()
+
+    def test_real_ros_one_arm_action_includes_assumed_other_arm_and_y_dry_run_only_discards(self):
+        """record_dataset.py --source real needs the 14-D action also in a one-arm session (the undriven arm at its
+        assumed pose), and Y on a real dry run discards the open episode without moving anything."""
+        node = None
+        rclpy.init()
+        try:
+            args, _ = teleop.parse_args(["--backend", "real-ros", "--arms", "left", "--dry-run",
+                                         "--other-arm-deg", "0", "10", "20", "0", "0", "0"])
+            chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
+                                       tcp_xyz=teleop.TCP_PRESETS["flange"])
+            node = teleop.DualArmTeleop(args, chain)
+            sent = {"action": [], "events": [], "traj": []}
+            node.action_pub.publish = sent["action"].append
+            node.event_pub.publish = sent["events"].append
+            node.traj_pub["left"].publish = sent["traj"].append
+            from sensor_msgs.msg import JointState
+            node._on_real_js("left", JointState(name=teleop.ARM_JOINTS, position=[.1] * 6))  # /left/joint_states
+            node.publish_action()
+            self.assertEqual(len(sent["action"]), 1)
+            d = dict(zip(sent["action"][0].name, sent["action"][0].position))
+            self.assertEqual(len(d), 14)
+            np.testing.assert_allclose([d[f"arm_right_joint{i}"] for i in range(1, 7)],
+                                       np.deg2rad([0, 10, 20, 0, 0, 0]))
+            np.testing.assert_allclose([d[f"arm_left_joint{i}"] for i in range(1, 7)], np.full(6, .1))
+            teleop.reset_scene(node, args, node.get_logger())
+            self.assertEqual([m.data for m in sent["events"]], ["reset"])
+            self.assertEqual(sent["traj"], [])  # no arm command from a button
+            self.assertIsNone(node.scene_reset_pub)
+        finally:
+            if node:
+                node.destroy_node()
             rclpy.try_shutdown()
 
     def test_park_skipped_without_ethernet_link(self):

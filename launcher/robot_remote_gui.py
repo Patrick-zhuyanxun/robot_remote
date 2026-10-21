@@ -4,7 +4,8 @@
   robot_remote/launcher/run_gui.sh
 
 Settings page -> Start:  Isaac sim (run_dual_arm_sim.sh --cameras ...) -> Quest teleop (run_quest_dual_arm.sh)
--> recorder (run_record.sh). The running page shows each process, the recording state, the Quest
+-> recorder (run_record.sh). Real robot: igus drivers -> teleop (run_quest_real_arm.sh) -> recorder
+(run_record.sh --source real, USB cameras of config/real_cameras.json) -> RViz. The running page shows each process, the recording state, the Quest
 connection URL, and the controller legend. Settings live in config/launcher.json.
 """
 
@@ -16,6 +17,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 import tkinter as tk
@@ -24,18 +26,46 @@ from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "recording"))
+import dataset_check  # noqa: E402  (standard library only)
 LOG_DIR = ROOT / "logs"
+LATEST_DIR = ROOT / "latest_run"  # newest session only: <process>.log + teleop_trace.csv, emptied on every Start
 CONFIG = ROOT / "config" / "launcher.json"
 LEGACY_CONFIG = Path.home() / ".config" / "robot_remote_launcher.json"
 QUEST_URL = "https://nvidia.github.io/IsaacTeleop/client/v1.3.131/"
 CAMERAS = [("head", "Head RGB (top view)"), ("wrist_left", "Left wrist RGB"), ("wrist_right", "Right wrist RGB")]
 ENDPOINTS = json.loads((ROOT / "config/real_arms.json").read_text())
+
+
+# real-arm teleop speed presets (quest_dual_arm_teleop.py flags). normal = the real-ros defaults.
+# "fast" (45 deg/s, a 0.8, leash 14) was removed after the real-arm J3/J5 test 2026-10-21: no faster arm (~32 deg/s peak
+# either way) but 8-10 deg overshoot and > 2.5 s to settle, vs 1.5 deg / 0.9 s with "normal".
+# Real-arm release stop (right arm 2026-10-21): the ReBeL itself brakes at only ~30 deg/s^2 after ~0.3 s, so a released
+# arm keeps going ~24 deg from ~30 deg/s but only ~6 deg from ~15 deg/s (glide, no pull-back). "precise" = stops fast.
+REAL_SPEED = {"precise": ["--max-joint-vel", "0.26", "--max-lin-vel", "0.12", "--max-rot-vel", "22"],
+              "normal": []}
+
+
+def real_camera_list():
+    """[(key, label)] of config/real_cameras.json (USB cameras of the real rig)."""
+    try:
+        cfg = json.loads((ROOT / "config/real_cameras.json").read_text())
+        return [(k, v.get("label", k)) for k, v in cfg.items() if not k.startswith("_")]
+    except (OSError, ValueError):
+        return []
+
+
+REAL_CAMERAS = real_camera_list()
 DEFAULTS = {
     "target": "isaac", "arms": ["left", "right"], "cameras": ["head", "wrist_left", "wrist_right"],
+    "real_cameras": [k for k, _ in REAL_CAMERAS],
     "record": True, "name": "dual_rebel_task", "task": "pick up the box",
-    "root": os.environ.get("ROBOT_REMOTE_DATASETS", str(ROOT / "datasets")), "resolution": "640x480", "fps": 30, "yaw_deg": 0,
+    "root": os.environ.get("ROBOT_REMOTE_DATASETS", str(dataset_check.DEFAULT_ROOT)), "resolution": "640x480", "fps": 30, "yaw_deg": 0,
     "left_ip": ENDPOINTS["left"]["host"], "right_ip": ENDPOINTS["right"]["host"], "real_dry_run": True,
     "real_park": True, "real_enable": True, "real_rviz": True, "real_start_home": True,
+    "real_accel": "0.52",
+    "real_speed": "precise",  # teleop speed preset of the real arms, see REAL_SPEED
+    "real_gains": "standard",  # arm controller gains, config/real_controller_gains.json  # --max-joint-acc [rad/s^2] of the real-arm command (identified arm limit ~0.52)
     "sim_rviz": True,  # sim: RViz with Isaac arms vs teleop commands + Quest controllers + lag panel
     "rot_frame": "tool",  # Quest hand rotation applied about the tool's own axes, or about the fixed base axes
 }
@@ -66,6 +96,13 @@ def apply_style(root):
     st.configure("Accent.TButton", font=("DejaVu Sans", 12, "bold"), padding=8)
 
 
+def clear_latest():
+    """Empty latest_run/ (only the files the launcher and the teleop write there) before a new session."""
+    LATEST_DIR.mkdir(exist_ok=True)
+    for f in list(LATEST_DIR.glob("*.log")) + list(LATEST_DIR.glob("*.csv")):
+        f.unlink()
+
+
 def lan_ip() -> str:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
@@ -82,10 +119,12 @@ def load_cfg():
         if source == LEGACY_CONFIG:
             # Keep old files in place; persist a discoverable project-local copy.
             cfg["real_dry_run"] = True
-            if cfg["root"] == str(Path.home() / "datasets"):
-                cfg["root"] = str(ROOT / "datasets")
             CONFIG.parent.mkdir(parents=True, exist_ok=True)
             CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
+        cfg["record"] = True  # Record starts ticked every time (a session without it saved nothing on A/X, 2026-10-21)
+        # former defaults (~/datasets, robot_remote/datasets) and the project folder itself -> robot_remote/dataset
+        if cfg["root"].rstrip("/") in (str(Path.home() / "datasets"), str(ROOT / "datasets"), str(ROOT)):
+            cfg["root"] = DEFAULTS["root"]
         return cfg
     except (OSError, ValueError):
         return dict(DEFAULTS)
@@ -142,12 +181,17 @@ class Proc:
         threading.Thread(target=self._pump, daemon=True).start()
 
     def _pump(self):
-        with open(self.log_path, "w") as f:
+        LATEST_DIR.mkdir(exist_ok=True)
+        with open(self.log_path, "w") as f, open(LATEST_DIR / f"{self.name}.log", "w") as latest:
             if self.cpus:
                 f.write(f"[launcher] {self.name} pinned to CPUs {self.cpus}\n")
+            latest.write(f"[launcher] {self.name} started {time.strftime('%Y-%m-%d %H:%M:%S')}: {' '.join(self.cmd)}\n"
+                         f"[launcher] full copy: {self.log_path}\n")
             for line in self.p.stdout:
                 f.write(line)
                 f.flush()
+                latest.write(line)
+                latest.flush()
                 self.lines.append(line)
                 if self.on_line:
                     self.on_line(self.name, line.rstrip())
@@ -206,7 +250,7 @@ class App(tk.Tk):
         g.pack(fill="x", pady=4)
         self.v_target = tk.StringVar(value=self.cfg["target"])
         ttk.Radiobutton(g, text="Isaac Sim dual-arm simulation", value="isaac", variable=self.v_target).pack(anchor="w", padx=8)
-        ttk.Radiobutton(g, text="Real igus ReBeL arms — igus ROS driver over wired Ethernet (teleop only)", value="real",
+        ttk.Radiobutton(g, text="Real igus ReBeL arms — igus ROS driver over wired Ethernet", value="real",
                         variable=self.v_target).pack(anchor="w", padx=8)
         self.real_box = ttk.Frame(g)
         self.real_box.pack(fill="x", padx=28, pady=(0, 4))
@@ -233,8 +277,31 @@ class App(tk.Tk):
                         variable=self.v_real_start_home).pack(side="left", padx=14)
         ttk.Checkbutton(row, text="Return to all joints 0 deg before exit (10 deg/s)",
                         variable=self.v_real_park).pack(side="left", padx=14)
-        ttk.Label(self.real_box, text="Starts the igus ROS driver per arm, then the teleop on its topics. Limits: 20 deg/s "
-                                      "per joint, 0.15 m/s, 30 deg/s.",
+        row = ttk.Frame(self.real_box)
+        row.pack(anchor="w")
+        ttk.Label(row, text="Speed").pack(side="left")
+        self.v_real_speed = tk.StringVar(value=self.cfg["real_speed"] if self.cfg["real_speed"] in REAL_SPEED else "precise")
+        ttk.Combobox(row, textvariable=self.v_real_speed, values=list(REAL_SPEED), width=8,
+                     state="readonly").pack(side="left", padx=(6, 4))
+        ttk.Label(row, text="(precise 15°/s: stops ~6° after release; normal 30°/s: ~20°)",
+                  style="Dim.TLabel").pack(side="left", padx=(0, 14))
+        gains = json.loads((ROOT / "config/real_controller_gains.json").read_text())
+        self.real_gains = {k: v for k, v in gains.items() if not k.startswith("_")}
+        ttk.Label(row, text="Arm gains").pack(side="left")
+        self.v_real_gains = tk.StringVar(value=self.cfg["real_gains"] if self.cfg["real_gains"] in self.real_gains else "standard")
+        ttk.Combobox(row, textvariable=self.v_real_gains, values=list(self.real_gains), width=10,
+                     state="readonly").pack(side="left", padx=(6, 4))
+        ttk.Label(row, text="(standard p1/ff0.4; responsive p2/ff0.8 on J2-J5: faster, ~0.2 deg overshoot on the right arm)",
+                  style="Dim.TLabel").pack(side="left", padx=(0, 14))
+        ttk.Label(row, text="Joint acceleration [rad/s²]").pack(side="left")
+        self.v_real_accel = tk.StringVar(value=str(self.cfg["real_accel"]) if str(self.cfg["real_accel"]) in ("0.45", "0.52")
+                                         else "0.52")
+        ttk.Combobox(row, textvariable=self.v_real_accel, values=["0.45", "0.52"], width=5,
+                     state="readonly").pack(side="left", padx=6)
+        ttk.Label(row, text="real-arm test: higher values only added overshoot (8-10 deg) without a faster arm",
+                  style="Dim.TLabel").pack(side="left")
+        ttk.Label(self.real_box, text="Starts the igus ROS driver per arm, then the teleop on its topics. Limits: 30 deg/s "
+                                      "per joint, 0.25 m/s, 45 deg/s; command <= 10 deg ahead of the arm.",
                   style="Dim.TLabel").pack(anchor="w")
         self.v_target.trace_add("write", lambda *_: self._target_changed())
 
@@ -246,15 +313,24 @@ class App(tk.Tk):
         ttk.Checkbutton(row, text="Left arm  <-  left controller", variable=self.v_arms["left"]).pack(side="left", padx=(0, 20))
         ttk.Checkbutton(row, text="Right arm  <-  right controller", variable=self.v_arms["right"]).pack(side="left")
 
-        g = ttk.LabelFrame(left, text="3  Cameras (enabled in the sim and recorded)")
+        g = ttk.LabelFrame(left, text="3  Cameras (sim: rendered by Isaac; real: USB cameras) - recorded")
         g.pack(fill="x", pady=4)
         cam_box = g
         self.v_cams = {k: tk.BooleanVar(value=k in self.cfg["cameras"]) for k, _ in CAMERAS}
-        row = ttk.Frame(g)
+        self.sim_cam_box = row = ttk.Frame(g)
         row.pack(anchor="w", padx=8, pady=4)
+        ttk.Label(row, text="Sim:", width=5).pack(side="left")
         for k, label in CAMERAS:
             ttk.Checkbutton(row, text=label, variable=self.v_cams[k]).pack(side="left", padx=(0, 18))
-        row = ttk.Frame(g)
+        self.v_real_cams = {k: tk.BooleanVar(value=k in self.cfg["real_cameras"]) for k, _ in REAL_CAMERAS}
+        self.real_cam_box = row = ttk.Frame(g)
+        row.pack(anchor="w", padx=8, pady=(0, 4))
+        ttk.Label(row, text="Real:", width=5).pack(side="left")
+        for k, label in REAL_CAMERAS:
+            ttk.Checkbutton(row, text=label.split(" (")[0], variable=self.v_real_cams[k]).pack(side="left", padx=(0, 14))
+        if not REAL_CAMERAS:
+            ttk.Label(row, text="no config/real_cameras.json", style="Dim.TLabel").pack(side="left")
+        self.sim_res_box = row = ttk.Frame(g)
         row.pack(anchor="w", padx=8, pady=(0, 4))
         ttk.Label(row, text="Resolution").pack(side="left")
         self.v_res = tk.StringVar(value=self.cfg["resolution"])
@@ -263,10 +339,12 @@ class App(tk.Tk):
         ttk.Label(row, text="FPS").pack(side="left", padx=(12, 0))
         self.v_fps = tk.StringVar(value=str(self.cfg["fps"]))
         ttk.Combobox(row, textvariable=self.v_fps, values=["30", "15", "10"], width=4, state="readonly").pack(side="left", padx=6)
-        ttk.Label(row, text="More cameras = slower sim (3 cameras ~0.5x real time)", style="Dim.TLabel").pack(side="left", padx=12)
+        ttk.Label(row, text="Sim: more cameras = slower sim. Real: size from config/real_cameras.json",
+                  style="Dim.TLabel").pack(side="left", padx=12)
         self.v_sim_rviz = tk.BooleanVar(value=self.cfg["sim_rviz"])
-        ttk.Checkbutton(g, text="RViz (sim): Isaac arms vs teleop commands, Quest controllers, lag panel "
-                                   "(Quest link or simulator?)", variable=self.v_sim_rviz).pack(anchor="w", padx=8)
+        self.sim_rviz_cb = ttk.Checkbutton(g, text="RViz (sim): Isaac arms vs teleop commands, Quest controllers, lag panel "
+                                   "(Quest link or simulator?)", variable=self.v_sim_rviz)
+        self.sim_rviz_cb.pack(anchor="w", padx=8)
 
         g = ttk.LabelFrame(left, text="4  Data recording")
         g.pack(fill="x", pady=4)
@@ -287,10 +365,14 @@ class App(tk.Tk):
         ttk.Button(grid, text="Browse...", command=self._browse).grid(row=2, column=2, sticky="w")
         self.v_path_hint = ttk.Label(grid, style="Dim.TLabel")
         self.v_path_hint.grid(row=3, column=1, columnspan=2, sticky="w")
-        for v in (self.v_name, self.v_root):
+        for v in (self.v_name, self.v_root, self.v_target, self.v_res, self.v_fps, self.v_record,
+                  *self.v_cams.values(), *self.v_real_cams.values()):
             v.trace_add("write", lambda *_: self._update_path_hint())
         self._update_path_hint()
-        self.record_widgets = [w for w in self._descendants(g)] + [w for w in self._descendants(cam_box)]
+        self.real_only_widgets = self._descendants(self.real_cam_box)
+        self.sim_only_widgets = self._descendants(self.sim_cam_box) + [self.sim_rviz_cb]
+        self.sim_only_widgets += [w for w in self._descendants(self.sim_res_box) if isinstance(w, ttk.Combobox)
+                                  and w.cget("values") and "640x480" in w.cget("values")]  # resolution (sim only)
 
         g = ttk.LabelFrame(left, text="5  Quest connection")
         g.pack(fill="x", pady=4)
@@ -332,11 +414,12 @@ class App(tk.Tk):
                 w.configure(state="normal" if real else "disabled")
             except tk.TclError:
                 pass
-        for w in self.record_widgets:
-            try:
-                w.configure(state="disabled" if real else ("readonly" if isinstance(w, ttk.Combobox) else "normal"))
-            except tk.TclError:
-                pass
+        for widgets, on in ((self.sim_only_widgets, not real), (self.real_only_widgets, real)):
+            for w in widgets:
+                try:
+                    w.configure(state=("readonly" if isinstance(w, ttk.Combobox) else "normal") if on else "disabled")
+                except tk.TclError:
+                    pass
 
     def open_replay(self):
         from replay_window import ReplayWindow
@@ -344,14 +427,49 @@ class App(tk.Tk):
         ReplayWindow(self, str(d) if (d / "meta" / "info.json").is_file() else None)
 
     def _browse(self):
-        d = filedialog.askdirectory(initialdir=self.v_root.get() or str(Path.home()))
-        if d:
+        d = filedialog.askdirectory(initialdir=self.v_root.get() or str(dataset_check.DEFAULT_ROOT),
+                                    title="Save location (the folder that holds the datasets, or a dataset to continue)")
+        if not d:
+            return
+        if (Path(d) / "meta" / "info.json").is_file():  # picked a dataset itself: continue it
+            self.v_root.set(str(Path(d).parent))
+            self.v_name.set(Path(d).name)
+        else:
             self.v_root.set(d)
 
+    def _session_shape(self):
+        """(source, fps, {camera: (height, width)}) the recorder would use with the current settings."""
+        real = self.v_target.get() == "real"
+        if real:
+            try:
+                cams = json.loads((ROOT / "config/real_cameras.json").read_text())
+            except (OSError, ValueError):
+                cams = {}
+            shapes = {}
+            for k, v in self.v_real_cams.items():
+                if v.get() and k in cams:
+                    w, h = int(cams[k].get("width", 640)), int(cams[k].get("height", 480))
+                    shapes[k] = (w, h) if int(cams[k].get("rotate", 0)) in (90, 270) else (h, w)
+        else:
+            w, h = (int(x) for x in self.v_res.get().split("x"))
+            shapes = {k: (h, w) for k, v in self.v_cams.items() if v.get()}
+        return ("real" if real else "sim"), int(self.v_fps.get()), shapes
+
+    def _dataset_verdict(self):
+        """(ok, text) for the dataset at save location / name with the current settings."""
+        st = dataset_check.inspect(Path(self.v_root.get()).expanduser() / self.v_name.get())
+        problems = dataset_check.compatible(st["info"], *self._session_shape()) if st["state"] == "dataset" else []
+        return dataset_check.describe(st, problems)
+
     def _update_path_hint(self):
+        if not hasattr(self, "v_real_cams") or not hasattr(self, "v_path_hint"):
+            return  # still building the page
         p = Path(self.v_root.get()).expanduser() / self.v_name.get()
-        exists = (p / "meta" / "info.json").exists()
-        self.v_path_hint.configure(text=f"→ {p}" + ("   (exists: new episodes will be appended)" if exists else "   (new dataset)"))
+        try:
+            ok, text = self._dataset_verdict()
+        except (ValueError, OSError) as exc:
+            ok, text = False, str(exc)
+        self.v_path_hint.configure(text=f"→ {p}\n   {text}", foreground=C["dim"] if ok else C["err"])
 
     # ------------------------------------------------------------------ controller legend
     def _legend(self, parent):
@@ -377,7 +495,8 @@ class App(tk.Tk):
             ("#58a6ff", "A / X", "start recording -> press again to save the episode"),
             ("#d2a8ff", "B (right)", "discard the current episode and re-record"),
             (RESET_COLOR, "Y (left) - reset scene", "sim: both arms go home, grippers open, box flaps close;\n"
-                                                   "an open episode is discarded. Then A/X records the next one"),
+                                                   "real: both arms go home at 10 deg/s (any button / grip stops them).\n"
+                                                   "An open episode is discarded. Then A/X records the next one"),
             ("#8b949e", "Rotate the controller", "twist the handle = spin the tool; nod = tilt the tool"),
         ]
         y = 300
@@ -394,11 +513,11 @@ class App(tk.Tk):
     def _collect(self):
         arms = [s for s, v in self.v_arms.items() if v.get()]
         cams = [k for k, v in self.v_cams.items() if v.get()]
+        real_cams = [k for k, v in self.v_real_cams.items() if v.get()]
         w, h = self.v_res.get().split("x")
         real = self.v_target.get() == "real"
-        if real:
-            cams = []
-        cfg = {"target": self.v_target.get(), "arms": arms, "cameras": cams, "record": self.v_record.get() and not real,
+        cfg = {"target": self.v_target.get(), "arms": arms, "cameras": cams, "real_cameras": real_cams,
+               "record": self.v_record.get(),
                "name": self.v_name.get().strip(), "task": self.v_task.get().strip(), "root": self.v_root.get().strip(),
                "resolution": self.v_res.get(), "fps": int(self.v_fps.get()), "yaw_deg": int(self.v_yaw.get()),
                "width": int(w), "height": int(h),
@@ -406,6 +525,8 @@ class App(tk.Tk):
                "right_ip": self.v_real_ips["right"].get().strip(), "real_dry_run": self.v_real_dry.get(),
                "real_park": self.v_real_park.get(), "real_enable": self.v_real_enable.get(),
                "real_rviz": self.v_real_rviz.get(), "real_start_home": self.v_real_start_home.get(),
+               "real_accel": self.v_real_accel.get(), "real_speed": self.v_real_speed.get(),
+               "real_gains": self.v_real_gains.get(),
                "sim_rviz": self.v_sim_rviz.get(),
                "rot_frame": self.cfg.get("rot_frame", "tool")}  # set on the run page (button), kept for next time
         if real:
@@ -423,6 +544,9 @@ class App(tk.Tk):
                 raise ValueError("Please enter a task description")
             if not re.fullmatch(r"[A-Za-z0-9_.\-]+", cfg["name"] or ""):
                 raise ValueError("Dataset name: letters, digits, _ . - only")
+            ok, text = self._dataset_verdict()
+            if not ok:
+                raise ValueError(f"Dataset {Path(cfg['root']).expanduser() / cfg['name']}:\n{text}")
         return cfg
 
     def start(self):
@@ -439,6 +563,8 @@ class App(tk.Tk):
                 + ("- Motors that report 'not enabled' are ENABLED now (Reset + Enable); the arms then hold.\n"
                    if cfg["real_enable"] else "- Motors are already enabled (iRC / robot controls).\n")
                 + "- The path between straight up and home is clear. Real grippers are not controlled.\n"
+                + "- Y (left controller) / Arms home: both arms move ON THEIR OWN back to home at 10 deg/s;\n"
+                  "  any button or grip stops them.\n"
                 + ("- After connecting the arms move ON THEIR OWN to home (0, 0, 65, 0, 50, 0) deg, 10 deg/s.\n"
                    if cfg["real_start_home"] else "- The arms start where they are (all 0 = straight up is hard to control).\n")
                 + ("- On Stop all the arms move ON THEIR OWN back to all joints 0 deg, 10 deg/s.\n"
@@ -448,6 +574,7 @@ class App(tk.Tk):
             return
         CONFIG.parent.mkdir(parents=True, exist_ok=True)
         CONFIG.write_text(json.dumps({k: v for k, v in cfg.items() if k in DEFAULTS}, ensure_ascii=False, indent=1))
+        clear_latest()
         self.cfg = cfg
         self.settings_frame.pack_forget()
         self.run_frame = self._build_run()
@@ -465,8 +592,11 @@ class App(tk.Tk):
         self.rec_label.pack(fill="x")
         info = (f"Task: {cfg['task']}\nDataset: {Path(cfg['root']).expanduser() / cfg['name']}" if cfg["record"]
                 else "Teleop only (not recording)")
-        ttk.Label(left, text=info + f"\nArms: {', '.join(cfg['arms'])}    Cameras: {', '.join(cfg['cameras']) or 'none'}"
-                  f"    {cfg['resolution']} @ {cfg['fps']} fps", style="Dim.TLabel").pack(anchor="w", pady=6)
+        real = cfg["target"] == "real"
+        cams = cfg["real_cameras"] if real else cfg["cameras"]
+        ttk.Label(left, text=info + f"\nArms: {', '.join(cfg['arms'])}    Cameras: {', '.join(cams) or 'none'}"
+                  + (f"    @ {cfg['fps']} fps (USB cameras)" if real else f"    {cfg['resolution']} @ {cfg['fps']} fps"),
+                  style="Dim.TLabel").pack(anchor="w", pady=6)
         g = ttk.LabelFrame(left, text="Processes")
         g.pack(fill="x", pady=4)
         self.status = {}
@@ -491,8 +621,9 @@ class App(tk.Tk):
         # live switch of the rotation frame; enabled once the teleop reports its frame (it applies at the next grip)
         self.b_frame = ttk.Button(btns, text=FRAME_TEXT[cfg["rot_frame"]], command=self._toggle_frame, state="disabled")
         self.b_frame.pack(side="left", padx=(0, 8))
-        if cfg["target"] != "real":  # sim only: arms home + box flaps closed (an open episode is discarded)
-            ttk.Button(btns, text="⟲ Reset scene  (= Y)", command=self._reset_scene).pack(side="left", padx=(0, 8))
+        # sim: arms home + box flaps closed; real: arms slowly home (both: an open episode is discarded)
+        ttk.Button(btns, text="⟲ Arms home  (= Y)" if cfg["target"] == "real" else "⟲ Reset scene  (= Y)",
+                   command=self._reset_scene).pack(side="left", padx=(0, 8))
         ttk.Button(btns, text="■ Stop all", command=self.stop_all).pack(side="right")
         ttk.Button(btns, text="? Manual", command=open_manual).pack(side="right")
         ttk.Button(btns, text="Open log folder", command=lambda: subprocess.Popen(["xdg-open", str(LOG_DIR)])).pack(side="right", padx=8)
@@ -525,12 +656,13 @@ class App(tk.Tk):
     def _launch_real(self):
         cfg = self.cfg
         self._set("sim", C["dim"], "not used (real robot)")
-        self._set("record", C["dim"], "not available on the real robot yet")
+        self._set("record", C["dim"], "starts after the arms connect" if cfg["record"] else "disabled")
         # 1) the igus ROS driver of each selected arm (real_robot/dual_arm_driver.launch.py), motors enabled
         mock = os.environ.get("ROBOT_REMOTE_DRIVER_MOCK") == "1"  # automated tests: no robot
         enable = cfg["real_enable"] and not cfg["real_dry_run"] and not mock
         launch = (f"source /opt/ros/humble/setup.bash && source '{ROOT}/igus_ws/install/setup.bash' && "
                   f"exec ros2 launch '{ROOT}/real_robot/dual_arm_driver.launch.py' arms:={','.join(cfg['arms'])} "
+                  f"gains:={cfg.get('real_gains', 'standard')} "
                   f"enable_motors:={'true' if enable else 'false'} left_ip:={cfg['left_ip']} right_ip:={cfg['right_ip']}"
                   + (" hardware_protocol:=mock_hardware" if mock else ""))
         self._set("sim", C["warn"], "starting the igus ROS driver(s)...")
@@ -548,7 +680,8 @@ class App(tk.Tk):
         self._set("sim", C["ok"], "driver up" + (", motors enabled" if enable else ""))
         # 2) the Quest teleop, streaming to the drivers' trajectory controllers (--backend real-ros)
         cmd = [str(ROOT / "quest_teleop" / "run_quest_real_arm.sh"), "--arms", *cfg["arms"],
-               "--yaw-deg", str(cfg["yaw_deg"]), "--rot-frame", cfg["rot_frame"], "--quiet"]
+               "--yaw-deg", str(cfg["yaw_deg"]), "--rot-frame", cfg["rot_frame"], "--quiet",
+               "--max-joint-acc", str(cfg.get("real_accel", "0.52")), *REAL_SPEED.get(cfg.get("real_speed"), [])]
         if cfg["yaw_deg"] == 180:
             cmd.append("--swap-hands")
         if cfg["real_dry_run"]:
@@ -558,13 +691,18 @@ class App(tk.Tk):
         if not cfg["real_start_home"]:
             cmd.append("--no-start-home")
         self._set("teleop", C["warn"], "connecting to the drivers, then moving to home...")
-        self.procs["teleop"] = Proc("teleop", cmd, self._on_line, stdin=True)
+        brake = self.real_gains_table().get(cfg.get("real_gains"), {}).get("brake_delay_s")
+        self.procs["teleop"] = Proc("teleop", cmd, self._on_line, stdin=True,
+                                    extra_env={"ROBOT_REMOTE_BRAKE_DELAY": str(brake)} if brake else None)
         p = self.procs["teleop"]
         if not self._wait_for(p, r"real arm connected", 60):
             p.interrupt()
             self._set("teleop", C["err"], f"no joint states from the driver(s); log: {p.log_path.name}")
             return
         self._set("sim", C["ok"], "robot connected")
+        if cfg["record"] and not self._start_recorder(["--source", "real", "--cameras", *cfg["real_cameras"]],
+                                                      "opening the USB cameras..."):
+            return
         if cfg["real_rviz"]:
             self._msg("[robot] opening RViz (live arms + Quest controllers)")
             self.procs["viz"] = Proc("viz", [str(ROOT / "quest_teleop" / "run_teleop_viz.sh"), "--source", "real",
@@ -574,7 +712,29 @@ class App(tk.Tk):
             self._set("teleop", C["err"], f"failed to start - see log: {p.log_path}")
             return
         self._set("teleop", C["warn"], f"waiting for the Quest (Server IP {lan_ip()})")
-        self.events.put(("rec", "real", 0))
+        self.events.put(("rec", "idle", 0) if cfg["record"] else ("rec", "real", 0))
+
+    @staticmethod
+    def real_gains_table():
+        try:
+            return {k: v for k, v in json.loads((ROOT / "config/real_controller_gains.json").read_text()).items()
+                    if not k.startswith("_")}
+        except (OSError, ValueError):
+            return {}
+
+    def _start_recorder(self, extra, starting="starting..."):
+        """run_record.sh with the dataset settings + extra args; True once it is ready for A/X."""
+        cfg = self.cfg
+        rec_cmd = [str(ROOT / "recording" / "run_record.sh"), "--name", cfg["name"], "--task", cfg["task"],
+                   "--root", cfg["root"], "--fps", str(cfg["fps"]), *extra]
+        self._set("record", C["warn"], starting)
+        self.procs["record"] = Proc("record", rec_cmd, self._on_line, stdin=True)
+        if not self._wait_for(self.procs["record"], r"\[rec\] controls", 120):
+            why = next((ln for ln in reversed(self.procs["record"].lines) if "ERROR" in ln or "Error:" in ln), "")
+            self._set("record", C["err"], f"failed to start - {why[-120:] or 'see log'}: {self.procs['record'].log_path.name}")
+            return False
+        self._set("record", C["ok"], "ready (press A/X to record)")
+        return True
 
     def _launch_sequence(self):
         cfg = self.cfg
@@ -609,15 +769,9 @@ class App(tk.Tk):
                                              "--yaw-deg", str(cfg["yaw_deg"])])
 
         if cfg["record"]:
-            rec_cmd = [str(ROOT / "recording" / "run_record.sh"), "--name", cfg["name"], "--task", cfg["task"],
-                       "--root", cfg["root"], "--fps", str(cfg["fps"]), "--width", str(cfg["width"]),
-                       "--height", str(cfg["height"]), "--cameras", *cfg["cameras"]]
-            self._set("record", C["warn"], "starting...")
-            self.procs["record"] = Proc("record", rec_cmd, self._on_line, stdin=True)
-            if not self._wait_for(self.procs["record"], r"\[rec\] controls", 120):
-                self._set("record", C["err"], f"failed to start - see log: {self.procs['record'].log_path}")
+            if not self._start_recorder(["--width", str(cfg["width"]), "--height", str(cfg["height"]),
+                                         "--cameras", *cfg["cameras"]]):
                 return
-            self._set("record", C["ok"], "ready (press A/X to record)")
             self.events.put(("rec", "idle", 0))
         else:
             self._set("record", C["dim"], "disabled")
@@ -630,6 +784,10 @@ class App(tk.Tk):
         if name == "teleop" and any(k in line for k in ("REAL ARM", "real arm connected", "other publisher", "let go", "RobotError", "[park]", "[home]", "motors enabled", "watching the", "assumed to stay", "apart (surface", "guard blind",
                                                          "start pose", "dry run", "[reset]")):
             self._msg(f"[robot] {line.split(']: ')[-1]}")
+        if name == "teleop" and "button -> toggle" in line and not self.cfg.get("record"):
+            self._msg("[record] A/X pressed, but recording is OFF this session - nothing is saved. Stop all, tick "
+                      "'Record a LeRobot dataset' (section 4) and Start again.")
+            self.events.put(("rec", "not_recording", None))
         if name == "teleop" and (m := re.search(r"rotation frame: (tool|base)\b", line)):
             self.events.put(("frame", m.group(1)))
             self._msg(f"[teleop] {line.split(']: ')[-1]}")
@@ -651,7 +809,7 @@ class App(tk.Tk):
                 self.events.put(("rec", "idle", n))
             elif "discarded" in line:
                 self.events.put(("rec", "idle", None))
-            elif m := re.search(r"● (\d+) frames \(([\d.]+)s sim\)", line):
+            elif m := re.search(r"● (\d+) frames \(([\d.]+)s (?:sim|real)\)", line):
                 self.events.put(("rec", "frames", (int(m.group(1)), float(m.group(2)), "stale" in line)))
             if line.startswith("[rec]") and "● " not in line or "WARNING" in line or "cannot start" in line:
                 self._msg(line)
@@ -711,7 +869,9 @@ class App(tk.Tk):
 
     def _rec_state(self, state, data):
         if state == "recording":
-            self.rec_label.configure(text="● RECORDING   A/X = save,  B = discard,  Y = reset scene (discards)", bg=C["rec"])
+            self.rec_label.configure(text="● RECORDING   A/X = save,  B = discard,  Y = " +
+                                     ("arms home (discards)" if self.cfg.get("target") == "real" else "reset scene (discards)"),
+                                     bg=C["rec"])
             self._set("record", C["rec"], "recording")
         elif state == "frames":
             n, sec, stale = data
@@ -722,10 +882,13 @@ class App(tk.Tk):
             if data is not None:
                 self.n_episodes = data
             n = getattr(self, "n_episodes", 0)
-            self.rec_label.configure(text=f"READY   {n} episodes saved   press A/X to record the next one", bg=C["panel"])
+            self.rec_label.configure(text=("REAL ARMS   " if self.cfg.get("target") == "real" else "") +
+                                     f"READY   {n} episodes saved   press A/X to record the next one", bg=C["panel"])
             self._set("record", C["ok"], f"ready ({n} episodes saved)")
         elif state == "teleop":
             self.rec_label.configure(text="TELEOP (not recording)", bg=C["panel"])
+        elif state == "not_recording":
+            self.rec_label.configure(text="RECORDING IS OFF - A/X saves nothing (tick Record before Start)", bg=C["warn"])
         elif state == "real":
             self.rec_label.configure(text=f"REAL {' + '.join(self.cfg['arms']).upper()} ARMS" +
                                      ("  (dry run)" if self.cfg["real_dry_run"] else "  - hold GRIP to move"), bg=C["warn"])

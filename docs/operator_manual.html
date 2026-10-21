@@ -197,7 +197,7 @@ details.qa div { padding: 0 14px 12px; }
 
   <div class="group"><p>First time</p>
     <div class="board">
-      <button class="tile" type="button" data-go="install"><span class="ico">1</span><span><b>Install</b><span>Isaac Sim, ROS 2, the three Python environments, the ROS workspace. About 1–2 hours, mostly downloads.</span><span class="prog" data-prog="install"></span></span></button>
+      <button class="tile" type="button" data-go="install"><span class="ico">1</span><span><b>Install</b><span>One command that asks what you need (Isaac Sim and the recorder are optional), then installs it. Up to 1–2 hours, mostly downloads.</span><span class="prog" data-prog="install"></span></span></button>
       <button class="tile q" type="button" data-go="quest"><span class="ico">2</span><span><b>Set up the Quest</b><span>Headset preparation and how to connect it to the workstation.</span></span></button>
     </div>
   </div>
@@ -213,7 +213,7 @@ details.qa div { padding: 0 14px 12px; }
     <div class="board">
       <button class="tile r" type="button" data-go="flow"><span class="ico">⇄</span><span><b>Data flow</b><span>Which program sends what to whom. Click a box for details; topics and dataset format.</span></span></button>
       <button class="tile r" type="button" data-go="tools"><span class="ico">≡</span><span><b>Scripts &amp; limits</b><span>Every launcher script, its options, and known limitations.</span></span></button>
-      <button class="tile r" type="button" data-go="real"><span class="ico">⚙</span><span><b>Real robot</b><span>Connect both physical ReBeL arms over wired Ethernet with Quest teleop.</span></span></button>
+      <button class="tile r" type="button" data-go="real"><span class="ico">⚙</span><span><b>Real robot</b><span>Two physical ReBeL arms with Quest teleop, four USB cameras and recording of real data.</span></span></button>
     </div>
   </div>
 </section>
@@ -223,7 +223,7 @@ details.qa div { padding: 0 14px 12px; }
   <p class="eyebrow">First time · Install</p>
   <h1>Install everything on a new workstation</h1>
   <p class="lede">Go through the steps in order. Tick each one when its check passes; your ticks are remembered in this browser.</p>
-  <p class="note quest"><strong>Using a coding agent?</strong> Give it <code>AGENT_INSTALL.md</code> from the repository: <em>"Install robot_remote on this machine by following AGENT_INSTALL.md in https://github.com/Patrick-zhuyanxun/robot_remote"</em>. It runs the same steps and asks you to run the sudo parts.</p>
+  <p class="note quest"><strong>One command.</strong> <code>./setup/install.sh</code> asks you in plain text what to install and does the rest. A coding agent can do the same: give it <code>AGENT_INSTALL.md</code> from the repository (<em>"Install robot_remote on this machine by following AGENT_INSTALL.md in https://github.com/Patrick-zhuyanxun/robot_remote"</em>); it first checks what is already installed and which versions, asks only what is still open, and passes your answers to the installer.</p>
   <div class="progress" aria-hidden="true"><i id="installbar"></i></div>
   <div class="stepper" data-stepper="install">
     <ol class="steplist"></ol>
@@ -234,7 +234,7 @@ details.qa div { padding: 0 14px 12px; }
         <ul>
           <li><strong>Ubuntu 22.04</strong> (ROS 2 Humble needs it).</li>
           <li><strong>NVIDIA RTX GPU</strong> with driver 580 or newer. Tested on an RTX A5000 with 580.126.</li>
-          <li>About <strong>40 GB free disk</strong>: Isaac Sim takes about 20 GB unzipped, the Python environments about 10 GB.</li>
+          <li>About <strong>40 GB free disk</strong> with Isaac Sim (about 20 GB unzipped, the Python environments about 10 GB); about 15 GB without it.</li>
           <li>A <strong>Wi-Fi network</strong> that the Quest and the workstation both join. The workstation may be wired to the same router.</li>
           <li>A <strong>Meta Quest 3 or 3S</strong> with both controllers.</li>
         </ul>
@@ -242,8 +242,57 @@ details.qa div { padding: 0 14px 12px; }
         <p class="check">Pass: <b>Ubuntu 22.04.x</b>, your GPU with driver ≥ 580, and ≥ 40G available.</p>
       </div>
 
-      <div class="step" data-step="ROS 2 Humble">
-        <h2>Install ROS 2 Humble and the MoveIt extras</h2>
+      <div class="step" data-step="Get the code">
+        <h2>Get the robot_remote code</h2>
+        <p>Clone the public repository. Any location works. <strong>All later commands are run from inside this folder</strong> (they start with <code>./</code>).</p>
+        <div class="copyrow"><pre><code id="c-clone">git clone https://github.com/Patrick-zhuyanxun/robot_remote.git ~/robot_remote
+cd ~/robot_remote</code></pre><button type="button" data-copy="c-clone">Copy</button></div>
+        <p class="check">Pass: <code>ls</code> shows <code>launcher  quest_teleop  recording  setup  dual_arm_sim …</code></p>
+      </div>
+
+      <div class="step" data-step="Run the installer">
+        <h2>Run the installer and answer its questions</h2>
+        <div class="copyrow"><pre><code id="c-inst">./setup/install.sh</code></pre><button type="button" data-copy="c-inst">Copy</button></div>
+        <p>It lists what is already on the machine with versions (<code>./setup/install.sh --detect</code> shows only this and changes nothing; an Isaac Sim other than 6.1.x or a LeRobot other than 0.5.x is marked unusable), asks the questions below, prints the plan and waits for <em>y</em>. Always installed: the ROS workspace <code>igus_ws</code> (igus ReBeL description + MoveIt), the Quest teleop environment <code>.venv_quest</code> and the CloudXR runtime.</p>
+        <div class="tbl"><table>
+          <thead><tr><th>Question</th><th>Choose</th></tr></thead>
+          <tbody>
+            <tr><th>Isaac Sim 6.1 (about 9 GB download, 20 GB on disk)</th><td><strong>Download</strong> or <strong>use an existing folder</strong> for the simulation. Isaac Sim is <em>also needed to record datasets, real robot included</em>: the recorder borrows its bundled ROS 2. <strong>Skip</strong> only for teleop of the real arms without recording.</td></tr>
+            <tr><th>Recorder environment</th><td>A <strong>new</strong> <code>.venv_record</code> (LeRobot 0.5.1, several GB), <strong>your own</strong> LeRobot 0.5.x Python (so datasets are written by the version that trains on them), or <strong>skip</strong> (no recording, replay or playback window).</td></tr>
+            <tr><th>Legacy iRC_ROS packages</th><td>Default <strong>no</strong>. Only the single-arm demos in <code>igus_rebel_sim/</code> use them.</td></tr>
+          </tbody>
+        </table></div>
+        <p><strong>Administrator commands.</strong> The installer never runs <code>sudo</code> itself. If ROS 2 / apt packages are missing it prints the commands and stops (exit code 3): run them in a terminal, then start <code>./setup/install.sh</code> again; it only skips what is already installed, so repeating it is safe. The workspace build's <code>rosdep</code> may still ask for your password for missing apt packages.</p>
+        <p><strong>CloudXR licence.</strong> You accept it yourself, once per machine; the installer prints the command (or runs it if you pass <code>--accept-cloudxr-eula</code>):</p>
+        <div class="copyrow"><pre><code id="c-eula">.venv_quest/bin/python -m isaacteleop.cloudxr --accept-eula</code></pre><button type="button" data-copy="c-eula">Copy</button></div>
+        <p>For scripts and agents the same answers go on the command line; <code>--dry-run</code> shows the plan only:</p>
+        <div class="copyrow"><pre><code id="c-instopt">./setup/install.sh --dry-run --isaac download --record new --no-irc      # simulation + recording
+./setup/install.sh --isaac skip --record skip --no-irc                  # real-arm teleop only
+./setup/install.sh --help</code></pre><button type="button" data-copy="c-instopt">Copy</button></div>
+        <p class="note">Your answers are saved in <code>config/install_profile.env</code>. A non-default Isaac Sim or LeRobot location needs an <code>export ISAAC_SIM=…</code> / <code>export LEROBOT_PY=…</code> line in <code>~/.bashrc</code>; the installer prints it (<code>--write-bashrc</code> appends it).</p>
+        <p class="check">Pass: the installer ends with the environment check below.</p>
+      </div>
+
+      <div class="step" data-step="Network & ROS domain">
+        <h2>Network and ROS settings</h2>
+        <p><strong>Firewall.</strong> If <code>ufw</code> is enabled, open the CloudXR ports for the Quest:</p>
+        <div class="copyrow"><pre><code id="c-ufw">sudo ufw allow 47998/udp && sudo ufw allow 48322/tcp && sudo ufw allow 49100/tcp</code></pre><button type="button" data-copy="c-ufw">Copy</button></div>
+        <p><strong>Private ROS graph.</strong> Every launcher sources <code>ros_env.sh</code>, which sets <code>ROS_DOMAIN_ID=42</code> and <code>ROS_LOCALHOST_ONLY=1</code>. Another machine on the lab network runs the same rig on domain 0; without this, commands from one PC move the other PC's arms. Use another domain with <code>export ROBOT_REMOTE_DOMAIN_ID=43</code> if two people use this setup on one network.</p>
+        <p><strong>Datasets</strong> go to <code>robot_remote/dataset/</code> unless you choose another folder in the launcher or set <code>ROBOT_REMOTE_DATASETS</code>. The line under <em>Save location</em> says what Start will do: new dataset, append to an existing one (only with the same sim/real source, fps, cameras and image size), or why it cannot (incomplete dataset, a folder that is not a dataset). Browse to a dataset folder itself to continue it.</p>
+        <p class="check">Pass: <code>sudo ufw status</code> says inactive, or lists the three ports.</p>
+      </div>
+
+      <div class="step" data-step="Check everything">
+        <h2>Check everything</h2>
+        <p>One script checks what you chose to install and says how to fix what is missing. Parts you skipped show as <em>skip</em>.</p>
+        <div class="copyrow"><pre><code id="c-chk">./setup/check_env.sh</code></pre><button type="button" data-copy="c-chk">Copy</button></div>
+        <p class="check">Pass: every line is <b>OK</b> (or <b>skip</b>) and it ends with <b>All good</b>. Next: <a href="#quest" data-go="quest">Set up the Quest</a>.</p>
+      </div>
+
+      <div class="step" data-step="By hand">
+        <h2>Install by hand (what the installer runs)</h2>
+        <p>The installer runs exactly these commands. Use them if you prefer to type them yourself, or to repeat one part. Every command runs from the robot_remote folder.</p>
+        <h3>ROS 2 Humble and the MoveIt extras (sudo)</h3>
         <p>Follow the official guide to add the ROS 2 apt repository and install <code>ros-humble-desktop</code>:
           <a href="https://docs.ros.org/en/humble/Installation/Ubuntu-Install-Debs.html" target="_blank" rel="noopener">docs.ros.org · Humble · Ubuntu (deb packages)</a>. Then add the build tools and the packages the igus MoveIt config uses:</p>
         <div class="copyrow"><pre><code id="c-ros">sudo apt update && sudo apt install -y ros-humble-desktop ros-humble-xacro \
@@ -255,25 +304,11 @@ sudo rosdep init; rosdep update</code></pre><button type="button" data-copy="c-r
         <div class="copyrow"><pre><code id="c-rosup">sudo apt update && sudo apt install --only-upgrade -y 'ros-humble-*'</code></pre><button type="button" data-copy="c-rosup">Copy</button></div>
         <p class="note">Gazebo is not used. Do not install <code>ros-humble-gz-ros2-control</code>; the workspace script skips it.</p>
         <p class="check">Pass: <code>source /opt/ros/humble/setup.bash && ros2 pkg prefix moveit_ros_move_group</code> prints a path.</p>
-      </div>
-
-      <div class="step" data-step="uv">
-        <h2>Install uv</h2>
+        <h3>uv</h3>
         <p>uv creates the Python environments. It installs into your home directory and needs no sudo.</p>
         <div class="copyrow"><pre><code id="c-uv">curl -LsSf https://astral.sh/uv/install.sh | sh</code></pre><button type="button" data-copy="c-uv">Copy</button></div>
         <p class="check">Pass: open a new terminal, then <code>uv --version</code> prints a version.</p>
-      </div>
-
-      <div class="step" data-step="Get the code">
-        <h2>Get the robot_remote code</h2>
-        <p>Clone the public repository. Any location works. <strong>All later commands are run from inside this folder</strong> (they start with <code>./</code>).</p>
-        <div class="copyrow"><pre><code id="c-clone">git clone https://github.com/Patrick-zhuyanxun/robot_remote.git ~/robot_remote
-cd ~/robot_remote</code></pre><button type="button" data-copy="c-clone">Copy</button></div>
-        <p class="check">Pass: <code>ls</code> shows <code>launcher  quest_teleop  recording  setup  dual_arm_sim …</code></p>
-      </div>
-
-      <div class="step" data-step="Isaac Sim 6.1">
-        <h2>Install Isaac Sim 6.1</h2>
+        <h3>Isaac Sim 6.1 (optional)</h3>
         <p>Isaac Sim ships as one zip (about 9 GB). Unzip it to <code>~/isaac-sim-6.1</code>. It brings its own Python 3.12 and its own copy of the ROS 2 Humble libraries, so it never uses <code>/opt/ros</code>.</p>
         <div class="copyrow"><pre><code id="c-isaac">cd ~/Downloads && curl -L -C - --retry 5 -o isaac-sim-6.1.0.zip \
   https://downloads.isaacsim.nvidia.com/isaac-sim-standalone-6.1.0-linux-x86_64.zip
@@ -282,48 +317,23 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
         <p>Installed somewhere else? Put <code>export ISAAC_SIM=/your/path</code> in <code>~/.bashrc</code>; every launcher reads it.</p>
         <p class="note">The first start compiles shaders and can take several minutes. Later starts take 30–60 s.</p>
         <p class="check">Pass: <code>VERSION</code> starts with <b>6.1.0</b>.</p>
-      </div>
-
-      <div class="step" data-step="ROS workspace">
-        <h2>Build the ROS workspace</h2>
+        <h3>ROS workspace</h3>
         <p>Clones the igus ReBeL description and MoveIt config (<code>fani8j/Igus_rebel</code>, branch <code>hcut-path-consistency</code>, pinned commit) into <code>igus_ws/src</code>, applies our patch from <code>igus_ws/patches/</code>, installs apt dependencies with rosdep and runs colcon. About 5 minutes.</p>
         <div class="copyrow"><pre><code id="c-ws">./setup/install_ros_ws.sh</code></pre><button type="button" data-copy="c-ws">Copy</button></div>
         <p>The patch sets <code>open_loop_control: true</code> in the simulated controller config. Without it, MoveIt-driven streaming in the sim creeps at about a third of the commanded speed.</p>
         <p>Add <code>--with-irc</code> to also build the older CommonplaceRobotics <code>iRC_ROS</code> packages; only the single-arm demos in <code>igus_rebel_sim/</code> use them.</p>
         <p class="check">Pass: the script ends with <b>[ws] done</b> and colcon reports no failed packages.</p>
-      </div>
-
-      <div class="step" data-step="Quest environment">
-        <h2>Create the Quest teleop environment</h2>
+        <h3>Quest teleop environment</h3>
         <p>Creates <code>.venv_quest</code>: Python 3.10 so it can import the system ROS 2 <code>rclpy</code>, plus NVIDIA Isaac Teleop with the CloudXR runtime. Then read and accept the CloudXR licence (once per machine).</p>
         <div class="copyrow"><pre><code id="c-quest">./setup/install_quest_env.sh
 .venv_quest/bin/python -m isaacteleop.cloudxr --accept-eula</code></pre><button type="button" data-copy="c-quest">Copy</button></div>
         <p class="check">Pass: the script ends with <b>[quest] done</b>.</p>
-      </div>
-
-      <div class="step" data-step="Recorder environment">
-        <h2>Create the recorder environment</h2>
+        <h3>Recorder environment (optional)</h3>
         <p>Creates <code>.venv_record</code>: Python 3.12 with LeRobot 0.5.1. Python 3.12 matches the <code>rclpy</code> bundled with Isaac Sim, which the recorder borrows.</p>
         <div class="copyrow"><pre><code id="c-rec">./setup/install_record_env.sh</code></pre><button type="button" data-copy="c-rec">Copy</button></div>
         <p>Already have a LeRobot 0.5.x environment you train with? Skip this step and point the recorder at it, so datasets are written by the version that reads them:</p>
         <div class="copyrow"><pre><code id="c-lp">echo 'export LEROBOT_PY=$HOME/Robotic_infra/lerobot/.venv/bin/python' >> ~/.bashrc</code></pre><button type="button" data-copy="c-lp">Copy</button></div>
         <p class="check">Pass: the script prints <b>[record] lerobot + av OK</b>.</p>
-      </div>
-
-      <div class="step" data-step="Network & ROS domain">
-        <h2>Network and ROS settings</h2>
-        <p><strong>Firewall.</strong> If <code>ufw</code> is enabled, open the CloudXR ports for the Quest:</p>
-        <div class="copyrow"><pre><code id="c-ufw">sudo ufw allow 47998/udp && sudo ufw allow 48322/tcp && sudo ufw allow 49100/tcp</code></pre><button type="button" data-copy="c-ufw">Copy</button></div>
-        <p><strong>Private ROS graph.</strong> Every launcher sources <code>ros_env.sh</code>, which sets <code>ROS_DOMAIN_ID=42</code> and <code>ROS_LOCALHOST_ONLY=1</code>. Another machine on the lab network runs the same rig on domain 0; without this, commands from one PC move the other PC's arms. Use another domain with <code>export ROBOT_REMOTE_DOMAIN_ID=43</code> if two people use this setup on one network.</p>
-        <p><strong>Datasets</strong> go to <code>robot_remote/datasets/</code> unless you choose another folder in the launcher or set <code>ROBOT_REMOTE_DATASETS</code>.</p>
-        <p class="check">Pass: <code>sudo ufw status</code> says inactive, or lists the three ports.</p>
-      </div>
-
-      <div class="step" data-step="Check everything">
-        <h2>Check everything</h2>
-        <p>One script checks every item above and says how to fix what is missing.</p>
-        <div class="copyrow"><pre><code id="c-chk">./setup/check_env.sh</code></pre><button type="button" data-copy="c-chk">Copy</button></div>
-        <p class="check">Pass: every line is <b>OK</b> and it ends with <b>All good</b>. Next: <a href="#quest" data-go="quest">Set up the Quest</a>.</p>
       </div>
 
     </div>
@@ -387,13 +397,14 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
         <h2>Fill in the settings</h2>
         <table>
           <tbody>
-            <tr><th>Target</th><td>Isaac Sim, or two real ReBeL arms over Ethernet (see <a href="#real" data-go="real">Real robot</a>; teleop only).</td></tr>
+            <tr><th>Target</th><td>Isaac Sim, or the real ReBeL arms through the igus ROS driver (see <a href="#real" data-go="real">Real robot</a>). Both can record.</td></tr>
             <tr><th>Arms</th><td>Left, right or both.</td></tr>
-            <tr><th>Cameras</th><td>Head, left wrist, right wrist. Fewer cameras make the simulation run faster.</td></tr>
+            <tr><th>Cameras</th><td>Simulation: head, left wrist, right wrist; fewer cameras make it run faster. Real arms: the USB cameras named in <code>config/real_cameras.json</code> (<code>wrist_left</code>, <code>wrist_right</code>, <code>head</code>, <code>knife</code>).</td></tr>
             <tr><th>RViz (sim)</th><td>On by default. Opens RViz with the Isaac arms (solid), the teleop's commands (translucent ghost arms), the Quest controllers and a lag panel. See <a href="#trouble" data-go="trouble">Troubleshooting → lag</a>.</td></tr>
             <tr><th>Resolution / FPS</th><td>Default 640×480 at 30 fps.</td></tr>
             <tr><th>Task</th><td>The instruction stored with every frame, for example <code>pick up the box</code>.</td></tr>
-            <tr><th>Dataset name, Save location</th><td>An existing name appends episodes to that dataset; the window says which.</td></tr>
+            <tr><th>Dataset name, Save location</th><td>Default <code>robot_remote/dataset/</code>. The line under the fields says what Start will do: new dataset, append to an existing one (same sim/real source, fps, cameras and image size only), or why it refuses (incomplete dataset, a folder that is not a dataset). A dataset that never saved an episode is re-created; nothing else is deleted or overwritten.</td></tr>
+            <tr><th>Real-robot options</th><td>Dry run (first start default: nothing is sent to the arms), Enable motors at start, Move to home after connecting, Return both arms to 0° before exit, RViz with live arms. See <a href="#real" data-go="real">Real robot</a>.</td></tr>
             <tr><th>Stance</th><td>Facing the same way as the arms, or facing the robot.</td></tr>
           </tbody>
         </table>
@@ -458,7 +469,7 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
       <button type="button" data-k="trig" aria-pressed="false"><span class="sw" style="background:var(--warn)"></span><strong>Trigger</strong><span>The gripper closes in proportion to the pull.</span></button>
       <button type="button" data-k="ax" aria-pressed="false"><span class="sw" style="background:var(--quest)"></span><strong>A or X</strong><span>Start recording an episode; press again to save it.</span></button>
       <button type="button" data-k="b" aria-pressed="false"><span class="sw" style="background:var(--violet)"></span><strong>B (right)</strong><span>Discard the current episode.</span></button>
-      <button type="button" data-k="y" aria-pressed="false"><span class="sw" style="background:var(--reset)"></span><strong>Y (left) · reset scene</strong><span>Simulator only: both arms are released and go back to the home pose, the grippers open, then the four box flaps close. An episode that is still recording is discarded. Grip again to continue. On the real arms Y does nothing (a button never moves the physical arms).</span></button>
+      <button type="button" data-k="y" aria-pressed="false"><span class="sw" style="background:var(--reset)"></span><strong>Y (left) · reset scene</strong><span>Simulator only: both arms are released and go back to the home pose, the grippers open, then the four box flaps close. An episode that is still recording is discarded. Grip again to continue. On the real arms Y discards the open episode and moves both arms back home at 10 deg/s on their own; any button, a grip or Stop all stops them there (dry run: no motion). Reset the objects by hand.</span></button>
     </div>
   </div>
   <p class="note"><strong>Rotation frame.</strong> The run page's <em>Rotation: TOOL frame / BASE frame</em> button switches how a hand rotation is applied while the teleop runs (sim and real arms). Translation always follows the arm-base axes. An arm you are holding keeps its frame until you <strong>release and grip again</strong>, so the tool never swings mid-grip. The choice is remembered for the next start; CLI <code>--rot-frame tool|base</code>, or <code>ros2 topic pub --once /quest_teleop/set_rot_frame std_msgs/msg/String "data: base"</code>.</p>
@@ -479,8 +490,9 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
       <li>One episode is one attempt at the task, from A/X to A/X. Keep it short and complete. Discard failed attempts with B instead of keeping them.</li>
       <li>Start every take from the same scene: press <strong>Y</strong> after saving (arms home, flaps closed), then A/X.</li>
       <li>The recorder takes a frame every 1/30 s of <strong>simulation</strong> time. If Isaac runs slower than real time (cameras, extra viewports, a busy CPU), 10 s of your time is less than 10 s of data. The sim log's <code>[dual_arm] [timing]</code> line shows the current speed.</li>
-      <li>An episode saves itself after 120 s of sim time.</li>
-      <li>Saving encodes the videos and takes a few seconds. Wait for the banner to show <em>READY</em> before the next take.</li>
+      <li>Real arms: frames are taken on <strong>wall-clock</strong> time at the chosen fps and the recorder counts late ticks in its log. Stop all saves an open episode <em>before</em> the arms return to 0°.</li>
+      <li>An episode saves itself after 120 s (sim time in the simulator).</li>
+      <li>Saving encodes the videos (AV1) and takes a few seconds in the simulator; with four real cameras it takes about twice the episode length. Wait for the banner to show <em>READY</em> before the next take.</li>
     </ul>
   </div>
   <div data-panel="r-scene" hidden>
@@ -511,7 +523,7 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
     <p>Without the window: <code>./recording/run_replay.sh --path &lt;dataset folder&gt; --episode 0</code>. In Python:</p>
     <div class="copyrow"><pre><code id="c-load">from pathlib import Path
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
-root = Path("datasets/dual_rebel_task").resolve()
+root = Path("dataset/dual_rebel_task").resolve()
 ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="button" data-copy="c-load">Copy</button></div>
   </div>
 </section>
@@ -563,7 +575,7 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
 
     <rect class="d-box" data-n="dataset" x="700" y="430" width="270" height="98" rx="8"/>
     <text class="d-t" x="835" y="458" text-anchor="middle">LeRobotDataset v3.0</text>
-    <text class="d-s" x="835" y="478" text-anchor="middle">robot_remote/datasets/&lt;name&gt;/</text>
+    <text class="d-s" x="835" y="478" text-anchor="middle">robot_remote/dataset/&lt;name&gt;/</text>
     <text class="d-s" x="835" y="494" text-anchor="middle">parquet (state, action)</text>
     <text class="d-s" x="835" y="510" text-anchor="middle">AV1 mp4 (cameras)</text>
 
@@ -613,6 +625,9 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
         <tr><td><code>/quest_teleop/{left,right}/hand</code>, <code>/quest_teleop/state</code>, <code>/quest_teleop/{left,right}/target</code></td><td>teleop → RViz</td><td>Controller poses, grip state per arm, TCP target</td></tr>
         <tr><td><code>/dual_arm/head/rgb</code>, <code>/dual_arm/wrist_left/rgb</code>, <code>/dual_arm/wrist_right/rgb</code></td><td>Isaac → recorder</td><td><code>rgb8</code> images at the chosen resolution</td></tr>
         <tr><td><code>/clock</code></td><td>Isaac → recorder</td><td>Simulation time; the recorder's sampling clock</td></tr>
+        <tr><td><code>/{left,right}/joint_states</code></td><td>igus driver → teleop, recorder</td><td>Real arms: measured joints (the real counterpart of <code>/dual_arm/isaac_joint_states</code>)</td></tr>
+        <tr><td><code>/{left,right}/rebel_arm_trajectory_controller/joint_trajectory</code></td><td>teleop → igus driver</td><td>Real arms: one-point trajectory per tick (30 Hz). The cameras are not ROS topics: the recorder reads them over USB.</td></tr>
+        <tr><td><code>/quest_teleop/joint_states</code></td><td>teleop → RViz, recorder</td><td>Real arms: both arms' pose for RViz; the recorder takes the arm you did not select from here</td></tr>
       </tbody>
     </table>
   </div>
@@ -627,7 +642,8 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
         <tr><td><code>task</code></td><td>string</td><td>The task typed in the launcher</td></tr>
       </tbody>
     </table>
-    <p>30 fps on simulation time, AV1 video, robot type <code>igus_rebel_dual_arm_isaac</code>.</p>
+    <p>Simulation: 30 fps on simulation time, AV1 video, robot type <code>igus_rebel_dual_arm_isaac</code>.</p>
+    <p><strong>Real arms</strong> (robot type <code>igus_rebel_dual_arm_real</code>): same 14-D <code>observation.state</code> from <code>/{left,right}/joint_states</code> (an arm you did not select keeps its assumed pose; the gripper slots are 0 because there is no physical gripper) and <code>action</code> from <code>/quest_teleop/action</code> (gripper slots = trigger, the operator's intent only). Images: <code>wrist_left</code>, <code>wrist_right</code>, <code>head</code>, <code>knife</code>, 640×480. The recorder refuses to append real episodes to a simulation dataset or to one with other cameras.</p>
   </div>
   <div data-panel="f-env" hidden>
     <ul>
@@ -652,12 +668,16 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
       <thead><tr><th>Script (in <code>robot_remote/</code>)</th><th>What it does</th></tr></thead>
       <tbody>
         <tr><td><code>launcher/run_gui.sh</code></td><td>Settings window and process manager. Recommended entry point.</td></tr>
-        <tr><td><code>setup/install_*.sh</code>, <code>setup/check_env.sh</code></td><td>Installation steps and the environment check.</td></tr>
+        <tr><td><code>setup/install.sh</code></td><td>Asks what to install (Isaac Sim, recorder, legacy packages) and installs it. <code>--dry-run</code>, <code>--isaac …</code>, <code>--record …</code>, <code>--help</code>.</td></tr>
+        <tr><td><code>setup/check_env.sh</code>, <code>setup/install_*.sh</code></td><td>Environment check (follows <code>config/install_profile.env</code>) and the single install steps the installer calls.</td></tr>
         <tr><td><code>dual_arm_sim/run_dual_arm_sim.sh</code></td><td>Isaac Sim rig with the ROS 2 bridge. <code>--cameras head wrist_left wrist_right</code>, <code>--headless</code>, <code>--random-box</code>.</td></tr>
         <tr><td><code>dual_arm_sim/setup_box_task_scene.py</code></td><td>Writes the box-task settings into the USD (fixed box, four flaps, physics materials, steady wrist cameras). Run with <code>~/isaac-sim-6.1/python.sh</code>.</td></tr>
         <tr><td><code>dual_arm_sim/check_box_task_scene.py</code></td><td>Headless check of that scene (flaps, fixed box, wrist camera).</td></tr>
         <tr><td><code>quest_teleop/run_quest_dual_arm.sh</code></td><td>Quest → both arms. <code>--arms right</code>, <code>--yaw-deg 180 --swap-hands</code>, <code>--max-rot-vel</code>.</td></tr>
         <tr><td><code>recording/run_record.sh</code></td><td>Recorder. <code>--name</code>, <code>--task</code>, <code>--root</code>, <code>--cameras</code>. Keyboard: Enter start/save, d discard, q quit.</td></tr>
+        <tr><td><code>recording/run_cameras.sh</code></td><td>Real USB cameras: <code>--list</code> (nodes, stable ids, USB speed), <code>--snapshot</code> (one JPEG per configured camera in <code>logs/camera_snapshots/</code>), <code>--test 10</code> (all together, fps and gaps).</td></tr>
+        <tr><td><code>quest_teleop/run_quest_real_arm.sh</code></td><td>Quest → the real arms. Default <code>--backend real-ros</code> (igus ROS driver); <code>--check-only</code>, <code>--dry-run</code>, <code>--arms left right</code>; <code>--backend real</code> is the experimental direct Ethernet client.</td></tr>
+        <tr><td><code>real_robot/dual_arm_driver.launch.py</code>, <code>real_robot/rviz_pretest.launch.py</code></td><td><code>ros2 launch</code> files: one igus driver per arm (<code>/left</code>, <code>/right</code>), and the RViz / MoveIt pre-test of one arm.</td></tr>
         <tr><td><code>launcher/run_replay_gui.sh</code></td><td>Playback window: pick a dataset folder and episode, view it in LeRobot's viewer or replay it in Isaac.</td></tr>
         <tr><td><code>recording/run_replay.sh</code></td><td>Replay without the window: <code>--path &lt;dataset&gt; --episode N</code>; reports state error and frame shift.</td></tr>
         <tr><td><code>quest_teleop/run_teleop_viz.sh</code></td><td>RViz view: arms (solid), teleop commands (translucent), Quest controllers, control point, hand-motion axes and a lag panel. <code>--source isaac</code> (default) or <code>real</code>.</td></tr>
@@ -673,6 +693,7 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
       <li>Isaac is limited by one CPU thread. Below about 120 frames/s the simulation runs slower than real time and the arms move in slow motion; cameras, extra viewports and a slow CPU make it worse.</li>
       <li>The box body is fixed; the arms cannot push or carry it. The flaps are rigid 5 mm plates: a gripper forced down into a closed flap can pass through it.</li>
       <li>Not yet verified with a real headset end to end: the Y scene reset during recording, and the gripper channel in a recorded episode.</li>
+      <li>Real arms: no physical gripper; the stand, table and cameras are not in the collision guard; Quest-driven motion of the physical arms still needs on-site validation (see <a href="#real" data-go="real">Real robot</a>).</li>
     </ul>
   </div>
 </section>
@@ -687,6 +708,10 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
     <details class="qa"><summary><code>No such file or directory</code> when running a script</summary><div>The commands in this manual start with <code>./</code> and run from the robot_remote folder. <code>cd</code> into your clone first (for example <code>cd ~/robot_remote</code>), or put the full path in front.</div></details>
     <details class="qa"><summary>Playback window: "cannot read the dataset" / missing meta/episodes</summary><div>The folder was moved or renamed while the recorder was still finalizing. Look for a leftover <code>&lt;name&gt;/meta/episodes/</code> folder at the old Save location and move it into the dataset's <code>meta/</code>.</div></details>
     <details class="qa"><summary>Ethernet arms: connection or motor-state failure</summary><div>Run <code>./quest_teleop/run_quest_real_arm.sh --check-only</code>. Check left 192.168.3.11 and right 192.168.3.12, TCP 3920, and the PC subnet. <code>_MNE</code> / <code>KINSTATE 99</code> means motors are disabled; prepare them with the robot controls. Close other control clients before live teleop. The report is saved in <code>logs/real_connection_check.json</code>.</div></details>
+    <details class="qa"><summary>A real camera is missing, stale or shows 0 fps</summary><div>Run <code>./recording/run_cameras.sh --list</code> and <code>--test 10</code>. The Orbbecs are found by serial, the two ARC wrist cameras by <strong>USB port</strong> (<code>usb_port</code> in <code>config/real_cameras.json</code>): after re-cabling run <code>--snapshot</code>, look at <code>logs/camera_snapshots/</code> and fix the config. An Orbbec that delivers no frames after being probed needs to be unplugged and plugged in again. <code>/dev/videoN</code> renumbers on every replug and is never used.</div></details>
+    <details class="qa"><summary>Cameras reset or kernel says "Not enough bandwidth for altsetting"</summary><div>Everything is on a USB 2 bus. Plug the USB 3 hub into a USB 3 port of the PC: <code>run_cameras.sh --list</code> must show both Orbbecs at 5000 Mbit/s. The ARC cameras are USB 2 devices and share the hub's 480 Mbit/s half; two of them cannot stream if the Orbbecs also sit on a 480 Mbit/s bus.</div></details>
+    <details class="qa"><summary>Recorder or replay: rclpy / Isaac Sim not found</summary><div>The recorder borrows Isaac Sim's bundled ROS 2, so it needs Isaac Sim even for real-robot recording. Run <code>./setup/install.sh --isaac download</code> (or a path), or <code>export ISAAC_SIM=…</code> if it is in another folder.</div></details>
+    <details class="qa"><summary>Start is blocked: "dataset incomplete" / "not a dataset" / "different cameras"</summary><div>The launcher never writes into such a folder. Pick another name or folder; an <em>incomplete</em> dataset is one whose recorder was killed before it finished (move it away or finish it by hand). Episodes are appended only to a dataset with the same sim/real source, fps, cameras and image size.</div></details>
     <details class="qa"><summary>Real arm: "let go" warnings</summary><div>Joint states stopped for over 0.5 s (Wi-Fi) or the arm lagged its command by over 15°. Release grip and grip again. A wired connection helps.</div></details>
     <details class="qa"><summary>The Quest page cannot connect</summary><div>Same Wi-Fi as the workstation? Server IP current (the launcher shows it)? Certificate accepted again after an IP change? Firewall ports open (Install → Network)?</div></details>
     <details class="qa"><summary>Teleop dot stays amber after Connect</summary><div>Enter the immersive session, switch both controllers on and hold them in front of the headset.</div></details>
@@ -709,11 +734,12 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
 
 <!-- ======================= REAL ======================= -->
 <section class="page" data-page="real" data-title="Real robot" hidden>
-  <p class="eyebrow">Wired Ethernet · both physical arms</p>
+  <p class="eyebrow">Physical arms · igus ROS driver · USB cameras</p>
   <h1>Real robot</h1>
   <div class="tabs" role="tablist">
     <button type="button" role="tab" data-tab="x-pre" aria-selected="true">1 · RViz pre-test</button>
     <button type="button" role="tab" data-tab="x-run" aria-selected="false">2 · Quest teleop</button>
+    <button type="button" role="tab" data-tab="x-rec" aria-selected="false">3 · Record real data</button>
     <button type="button" role="tab" data-tab="x-how" aria-selected="false">How it connects</button>
     <button type="button" role="tab" data-tab="x-todo" aria-selected="false">Validation &amp; limits</button>
   </div>
@@ -763,12 +789,36 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
       <li>Launcher → <strong>Real igus ReBeL arms</strong>, tick the arms in “Arms to control”, press Start. It starts the igus driver of each arm (motors enabled), then the teleop: the arms move to home, then wait for the Quest.</li>
       <li>Connect the Quest. Each arm moves while its controller’s <strong>GRIP</strong> is held. The <em>Rotation: … frame</em> button switches tool / base frame rotation (applies at the next grip).</li>
       <li><strong>Stop all</strong>: the arms return to 0°, then teleop, RViz and drivers close.</li>
-      <li>The Y button (scene reset) does nothing on the real arms: a button never moves them.</li>
+      <li>The Y button moves both real arms home at 10 deg/s (any button, a grip or Stop all stops them); it does not reset objects.</li>
+      <li><strong>"arm lags its command" / the arm lets go during fast motion:</strong> the ReBeL accelerates at only about 30 deg/s² behind about 0.25 s of delay, so the teleop keeps each command within <code>--max-cmd-lead-deg</code> (6 deg) of the measured joints and the arm catches up instead of being let go. "arm does not follow its command" means it did not move at all for 1 s at that limit: motors off, e-stop, or blocked.</li>
     </ol>
     <p>Without the launcher, two terminals in the robot_remote folder:</p>
     <div class="copyrow"><pre><code id="c-real">source /opt/ros/humble/setup.bash && source igus_ws/install/setup.bash && ros2 launch real_robot/dual_arm_driver.launch.py arms:=left,right
 ./quest_teleop/run_quest_real_arm.sh --arms left right</code></pre><button type="button" data-copy="c-real">Copy</button></div>
-    <p>Choose <code>--arms left</code> or <code>--arms right</code> to connect one arm. The Ethernet path starts at the measured pose and rejects <code>--real-home</code>. No physical gripper control or real-episode recording yet.</p>
+    <p>Choose <code>--arms left</code> or <code>--arms right</code> to connect one arm. The direct Ethernet path starts at the measured pose and rejects <code>--real-home</code>. There is no physical gripper control. To record this session, see tab <em>3 · Record real data</em>.</p>
+  </div>
+  <div data-panel="x-rec" hidden>
+    <p class="note danger">Recording does not change how the arms are driven; everything on tab 2 still applies. Isaac Sim must be installed: the recorder borrows its ROS 2 (see Install).</p>
+    <ol>
+      <li>Plug the cameras in and check them: <code>./recording/run_cameras.sh --list</code>, then <code>--snapshot</code> (one JPEG per camera in <code>logs/camera_snapshots/</code>) and <code>--test 10</code> (all together; ARC about 47 decoded fps, Orbbecs 30 fps).</li>
+      <li>Launcher → <strong>Real igus ReBeL arms</strong>, tick the arms, tick <strong>Record</strong> and the cameras, name the dataset, Start. Order: igus drivers → teleop → recorder (opens the cameras) → RViz.</li>
+      <li>Connect the Quest. A/X starts and saves an episode, B or Y discards it (a button never moves the real arms). <strong>Stop all</strong> saves an open episode first, then the arms return to 0°.</li>
+    </ol>
+    <p>Without the launcher, with the drivers and <code>run_quest_real_arm.sh</code> already running:</p>
+    <div class="copyrow"><pre><code id="c-recreal">./recording/run_record.sh --source real --name my_real_task --task "pick up the box"</code></pre><button type="button" data-copy="c-recreal">Copy</button></div>
+    <h3>Cameras</h3>
+    <div class="tbl"><table>
+      <thead><tr><th>Dataset key</th><th>Camera</th><th>Found by</th></tr></thead>
+      <tbody>
+        <tr><td><code>wrist_left</code></td><td>ARC “HD USB Camera” (left arm)</td><td>USB port (<code>usb_port</code>); no serial number</td></tr>
+        <tr><td><code>wrist_right</code></td><td>ARC “HD USB Camera” (right arm)</td><td>USB port</td></tr>
+        <tr><td><code>head</code></td><td>Orbbec Gemini 336, third person</td><td>serial + colour interface (any port)</td></tr>
+        <tr><td><code>knife</code></td><td>Orbbec Gemini 305, close-up of the knife (left arm)</td><td>serial + colour interface</td></tr>
+      </tbody>
+    </table></div>
+    <p>Mapping and options (<code>rotate</code> 90/270 for a sideways image) are in <code>config/real_cameras.json</code>; only the colour stream is read. Each camera has its own reader thread that keeps the newest frame, so a camera that stops delivering is reported <em>stale</em> and never blocks the others. Keep the ARC cameras in their ports, or re-run <code>--snapshot</code> and fix the config.</p>
+    <p><strong>Cabling.</strong> A USB 3 hub is two hubs in one: the Orbbecs use its 5 Gbit/s side, the USB 2 ARC cameras its shared 480 Mbit/s side. Working setup: all four on one USB 3 hub in a USB 3 port of the PC (<code>--list</code> shows both Orbbecs at 5000 Mbit/s). On a USB 2-only port the second ARC fails with “Not enough bandwidth for altsetting” and the Gemini 336 resets repeatedly.</p>
+    <p>What is recorded and how it differs from the simulator: <a href="#flow" data-go="flow">Data flow → Dataset format</a>.</p>
   </div>
   <div data-panel="x-how" hidden>
     <p class="note">This tab describes the <strong>experimental direct Ethernet client</strong> (<code>--backend real</code>). The default real path is the igus ROS driver (<code>--backend real-ros</code>, tab 2).</p>
@@ -776,7 +826,7 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
       <tr><th>Control / state</th><td>One CRI TCP 3920 connection per arm. Queries state, active-client ownership, program state and Position Interface port. Zero-jog heartbeats keep it connected.</td></tr>
       <tr><th>Continuous targets</th><td>Separate Position Interface TCP per arm (queried from CRI; both currently report 3940). Six joint angles in degrees; no external axes or tool outputs are sent. Selected only while GRIP is held.</td></tr>
       <tr><th>ROS</th><td>Local ROS supplies the existing robot description / IK and visualization. No ROS topics carry physical arm commands and no remote ROS driver is required. Quest still uses Wi-Fi / CloudXR.</td></tr>
-      <tr><th>Limits</th><td>30 Hz; 0.35 rad/s per joint, 0.15 m/s TCP translation, 30°/s TCP rotation. Per-tick joint limits reject jumps. Starts at the physical measured pose.</td></tr>
+      <tr><th>Limits</th><td>30 Hz. igus ROS driver (default): 0.52 rad/s per joint with the command accelerating at most 0.45 rad/s² (the ReBeL follows about 0.52 rad/s²), 0.25 m/s TCP translation, 45°/s TCP rotation, command at most 10° ahead of the measured joints. Ethernet (experimental): 0.35 rad/s, 0.15 m/s, 30°/s. Per-tick joint limits reject jumps. Starts at the physical measured pose.</td></tr>
       <tr><th>Stop handling</th><td>Release deselects that arm’s position source. Tracking loss requires release and re-grip. Network faults, stale feedback (0.5 s), following error (15°), invalid targets or command gaps (0.25 s) close both selected transports. No automatic restart.</td></tr>
       <tr><th>Project files</th><td>Endpoints: <code>config/real_arms.json</code>. GUI settings: <code>config/launcher.json</code>. Logs: <code>logs/</code>. Shared Codex / Claude status: <code>AGENTS.md</code> (<code>CLAUDE.md</code> points to it).</td></tr>
     </tbody></table></div>
@@ -791,7 +841,8 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
       <tr><td>Quest → physical movement</td><td>On-site validation still required</td></tr>
       <tr><td>Joint zero conventions / directions, base poses and physical TCPs</td><td>On-site validation / calibration still required</td></tr>
       <tr><td>Stand, table and full-link collision checking</td><td>Not implemented; the existing point guard uses simulated geometry</td></tr>
-      <tr><td>Physical grippers, cameras and real recording</td><td>Not implemented</td></tr>
+      <tr><td>Real recording with four USB cameras</td><td>Cameras tested together (30 s) and the recorder tested with simulated arm topics and the real cameras (10 s); a full session with the arms and the Quest has not been run</td></tr>
+      <tr><td>Physical grippers</td><td>Not implemented (gripper slots in real datasets are 0)</td></tr>
     </tbody></table></div>
     <p class="note danger">Software speed limits and the point-distance guard are not personnel safety protection. Keep the hardware e-stop under an operator’s control.</p>
   </div>
@@ -911,7 +962,7 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
     cloudxr: ["CloudXR runtime", "Started by the teleop program from isaacteleop. Acts as the OpenXR runtime on the workstation and serves the secure WebSocket on port 48322. Licence accepted once per machine."],
     teleop: ["Quest teleop · quest_dual_arm_teleop.py", "Python 3.10 in .venv_quest with the system ROS 2 rclpy. While grip is held it turns hand motion into a flange target (translation in the arm-base frame, rotation in the tool frame), rate-limits it, solves IK per arm and publishes joint targets. Also publishes the 14-D action and the A/X / B events for the recorder; Y resets the scene (arms home, then /dual_arm/reset_scene). A [timing] line every 5 s shows loop rate, IK time and sim speed."],
     isaac: ["Isaac Sim 6.1 · run_dual_arm_sim.py", "Loads the dual-arm rig USD (fixed box with four flaps), moves both arms to the home pose and runs an OmniGraph ROS 2 bridge: joint commands in (newest only); joint states, /clock and the camera images out. Closes the flaps on /dual_arm/reset_scene and publishes /dual_arm/box_pose. A [dual_arm] [timing] line every 5 s shows frames/s and sim speed. Uses Isaac's own Python and ROS 2 libraries."],
-    recorder: ["Recorder · record_dataset.py", "LeRobot 0.5.1 (Python 3.12) with Isaac's rclpy. Takes one frame every 1/fps of simulation time: measured state, commanded action and the camera images. A/X starts and saves an episode, B discards it, a scene reset (Y) discards an open one."],
+    recorder: ["Recorder · record_dataset.py", "LeRobot 0.5.1 (Python 3.12) with Isaac's rclpy. Takes one frame every 1/fps of simulation time (real arms: wall time, USB cameras read inside the recorder): measured state, commanded action and the camera images. A/X starts and saves an episode, B discards it, a scene reset (Y) discards an open one."],
     dataset: ["LeRobotDataset v3.0", "One folder per dataset name: parquet files for state and action, AV1 videos per camera, metadata with the task text. Load it with LeRobotDataset(\"local/<name>\", root=...)."],
     gui: ["Launcher GUI · launcher/run_gui.sh", "Collects the settings, starts Isaac, then the teleop, then the recorder, watches their logs for readiness pins each program to its own CPU cores and offers Start / Save, Discard, Reset scene, the rotation-frame switch and Stop all. Optionally opens RViz."]
   };

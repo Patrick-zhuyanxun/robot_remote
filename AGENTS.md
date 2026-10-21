@@ -175,5 +175,151 @@
 ## 遙控器重置場景（2026-10-19，Claude；使用者要求，錄製時不用中斷）
 
 - 按鍵：A/X = 開始／儲存 episode，B = 丟棄，**Y（左手）= 重置場景**（原本 B/Y 都是丟棄）。GUI 執行頁另有「⟲ Reset scene (= Y)」按鈕（經 teleop stdin `reset_scene`）。
-- 重置（僅模擬）：送出 `reset` 事件（錄製中的 episode 由 record_dataset.py 丟棄）→ 兩臂放開、夾爪打開 → 以 0.4 rad/s 回到 HOME_DEG → 發布 `/dual_arm/reset_scene` 讓模擬關上四片蓋子（手臂離開後才關）→ 重新握持即可繼續。實機後端按 Y 只記錄警告，**不會因按鍵移動實體手臂**。
+- 重置（僅模擬）：送出 `reset` 事件（錄製中的 episode 由 record_dataset.py 丟棄）→ 兩臂放開、夾爪打開 → 以 0.4 rad/s 回到 HOME_DEG → 發布 `/dual_arm/reset_scene` 讓模擬關上四片蓋子（手臂離開後才關）→ 重新握持即可繼續。實機後端按 Y 只記錄警告，**不會因按鍵移動實體手臂**。（2026-10-21 已更新：實機 Y 會回 home，見「實機遙控跟不上 + 實機 Y 回 home」）
 - 驗證：新增整合測試（假 Isaac 跟隨命令、假 Quest 握持中按 Y）：握持被放開、`reset` 事件與 `/dual_arm/reset_scene` 各一次、手臂回到 home ±1°；55 項測試通過。未用實際頭盔試按。
+
+## 實機資料錄製 + 四台 USB 相機（2026-10-21，Claude）
+
+- 使用者需求：實機接上四台相機（兩台腕部、一台中間第三人稱、一台刀子近景），把實機資料收集 pipeline 整合起來。
+- 相機（`lsusb` / sysfs）：兩台 ARC「HD USB Camera」05a3:9230（無序號，只能以 USB 埠區分左右）、Orbbec Gemini 336（序號 CP96563000LY，彩色 = UVC interface 4）、Orbbec Gemini 305（CV27561000GA，彩色 interface 4；interface 6 另一彩色串流在 USB 2 上無法出圖）。Orbbec 的 `/dev/v4l/by-id` 不可用（多個 interface 同名 `video-index0`，曾指到深度節點）；`/dev/videoN` 每次插拔都會變。
+- 新增 `recording/real_cameras.py`（+ `run_cameras.sh --list / --snapshot / --test S`）：以 sysfs 找裝置（Orbbec = serial + interface，ARC = usb_port），每台相機一條讀取執行緒、只留最新一幀與 monotonic 時間；不出圖的相機回報 stale / 停止，不阻塞錄製。設定 `config/real_cameras.json`（鍵 = 資料集影像名）。ARC 640×480 MJPG 只有 120 fps，解碼上限 60 fps。
+- `record_dataset.py --source real`：state = `/{left,right}/joint_states`（igus driver；只開一臂時另一臂取 `/quest_teleop/joint_states` 的假設姿態），gripper 欄位 0（無實體夾爪）；action = `/quest_teleop/action`（gripper 欄位 = Quest trigger，只代表操作者意圖）；影像在錄製程序內直接讀 USB 相機（不經 ROS）；取樣時鐘 = 牆鐘；robot_type `igus_rebel_dual_arm_real`；記錄 late ticks。續錄既有資料集時若特徵 / fps / robot_type 不同則拒絕（避免 sim 與 real 混在同一資料集）。sim 路徑行為不變。
+- teleop：(1) 修正：real-ros 單臂時 `publish_action()` 因另一臂 `all_q` 為 None 而**從不發布** `/quest_teleop/action`（新測試在舊程式上失敗）；改為使用另一臂的假設 / 旁觀姿態（`undriven_q()`，與 RViz 用的相同）。(2) 實機按 Y：送 `reset` 事件讓錄製丟棄當前 episode，仍不移動手臂。（2026-10-21 已更新：實機 Y 會回 home，見「實機遙控跟不上 + 實機 Y 回 home」）
+- GUI：Real 模式可勾選錄製與實機相機（標籤取自 config）；啟動順序 driver → teleop（連上）→ recorder（開相機）→ RViz；Stop all 先存檔（recorder `q`）再讓手臂回 0°（沿用原順序，回位動作不會進 episode）。
+- 預設對應（**待使用者以快照確認**）：wrist_left = ARC @ 1-3.1、wrist_right = ARC @ 1-3.3、head = Gemini 336、knife = Gemini 305。2026-10-21 13:27 快照：1-3.1 畫面被貼近物體擋住（無法判斷左右）、1-3.3 看到夾爪與實驗室側面、336 往下看地板與紙箱、305 看天花板且右側有刀具（手臂直立時）且影像轉了 90°（可在 config 加 `"rotate": 90/270`）。
+- **硬體限制（實測）**：目前四台相機都接在一個 Genesys 05e3:0610 USB 2.0 hub。ARC 相機不論格式都要求最大頻寬（kernel：`Not enough bandwidth for altsetting 6`），兩台 ARC 無法同時在同一個 USB 2 hub 上串流（連 320×240 YUYV 也不行，v4l2-ctl 直接驗證 STREAMON ENOSPC）；Gemini 336 在此 hub 上反覆 -71 重新列舉；305 在 USB 2 上 interface 6 不出圖。（13:38 更正）使用者把同一個 USB 3 hub（Genesys 05e3:0626 SuperSpeed + 05e3:0610 USB 2 半邊，是同一顆 hub 的兩面）改接到 PC 的 USB 3 埠：Orbbec 走 5000 Mbit/s，兩台 ARC 走 hub 的 480 Mbit/s 半邊，**四台同時可用**（30 s 測試：ARC 各約 47 fps 解碼、Orbbec 30 fps、無 kernel 錯誤；改線後第一次測試左腕 0 fps，之後 3 次皆正常，推測為剛列舉完的暫態）。先前「兩台 ARC 不能共用 USB 2 hub」的結論只在 Orbbec 也走 480M 時成立，已更正 README。
+- 驗證：新增 `tests/test_real_recording.py`（以 LeRobot Python 實際執行 run_record.sh --source real，私有 ROS domain 87，假 driver / teleop topic + 兩個循環播放的影片檔當相機：存 1 個 episode、Y 丟棄第 2 個；檢查 robot_type、fps、影像 shape、時間戳 1/15 s、state = 左臂 driver + 右臂假設姿態 + gripper 0、action、影片檔）；teleop 單臂 action + 實機 Y 測試；GUI Real 模式勾選測試；sim 路徑回歸測試（假 /clock 半速：2 s 模擬時間 = 20 幀，不是 4 s 牆鐘）。全部 59 項測試通過。負載測試（4 個 640×480 影片檔當相機、30 fps、20 s，REC_DEBUG）：601 幀、0 late ticks、add_frame ≤ 1 ms；存檔（AV1 編碼 4 路，隨機雜訊影像為最壞情況）28.6 s，存檔期間無法開始下一段。**實體相機四台同時錄製尚未驗證**（被 USB 頻寬擋住）；未連手臂、未移動手臂。
+- 13:43 快照：1-3.1 鏡頭被擋住、1-3.3 看到夾爪與實驗室。**使用者確認（2026-10-21）**：1-3.1（被擋住那台）= 右腕 → `wrist_right`，1-3.3 = 左腕 → `wrist_left`；刀子近景相機（Gemini 305，`knife`）裝在左臂。已寫入 `config/real_cameras.json`。
+- 13:52 Gemini 305 彩色串流（interface 4）不出圖（v4l2-ctl 也一樣、無 kernel 錯誤、無其他程式佔用），無 root 無法 USB reset，請使用者重插。推測：13:43 `--snapshot` 連帶探測 305 的 interface 6（三種格式皆失敗）後卡住。`--snapshot` 改為預設只拍設定中的相機，`--all` 才探測其他節點。
+- 13:57 使用者重插 305 後：`--list` 兩台 Orbbec 5000 Mbit/s；四台同時 20 s：ARC 各約 47 fps 解碼、head / knife 30 fps；快照對應正確（wrist_right = 被遮住那台）。**實體相機 + 實際 recorder（假手臂 topic，未連手臂）錄 10 s**：301 幀、0 stale、add_frame ≤ 1 ms、四路影片皆寫入、robot_type igus_rebel_dual_arm_real；存檔（AV1 編碼 4 路）19.2 s ≈ 2 倍 episode 長度，存檔期間不能開始下一段（可考慮 `--vcodec h264` 加速，未測）。尚未做：GUI Real + 實際 driver 的完整錄製（需操作者在場啟動）。
+- 14:00 使用者要求「跑實體相機收資料 pipeline，不要移動實體手臂」：以腳本驅動實際 GUI（隱藏視窗，launcher.json 導向暫存）Real 模式：`ROBOT_REMOTE_DRIVER_MOCK=1`（igus driver = mock_hardware，不連手臂控制器）+ Dry run（不回 home、不回 0°、不送軌跡）+ Record + 四台實體相機，不接 Quest。流程 driver → teleop（兩臂 connected）→ recorder 開四台相機 → GUI 錄製鍵錄 8.2 s → 存檔 → Stop all 全部結束。結果：246 幀、0 stale、時間戳間隔 1/30 s、四路影片各 8.2 s、teleop 迴圈 29.9 Hz；state/action 全 0（mock driver 關節皆 0）。log：logs/driver_20261021_135959.log、teleop_20261021_140001.log、record_20261021_140002.log。未驗證：真實 driver 的關節值寫入（真實 driver 連線即 Reset/Enable 馬達，需操作者在場）、Quest 按鍵錄製。
+- 下一步：使用者改接線 → `recording/run_cameras.sh --list`（確認 Orbbec 為 5000 Mbit/s、ARC 各在不同 PC 埠）→ `--snapshot` 確認四個鏡頭位置並修正 `config/real_cameras.json`（usb_port / rotate）→ `--test 10`（四台同時 ≥ 30 fps）→ GUI Real + dry run + Record 錄一段確認資料集。
+
+## 資料集預設位置 + 存放位置檢查（2026-10-21，Claude）
+
+- 使用者要求：錄製預設存到 `dataset/`，並處理「選到空資料夾」與「如何接續」的情況。原本 `config/launcher.json` 的 root 是專案根目錄本身，所以根目錄多了 `dual_rebel_task/`（只有 meta/info.json、0 個 episode）。
+- 預設 root 改為 `robot_remote/dataset`（GUI、`record_dataset.py --root`、`replay_episode.py`；`ROBOT_REMOTE_DATASETS` 仍可覆蓋）。讀設定時舊預設（`~/datasets`、`robot_remote/datasets`）與「專案根目錄本身」自動改為 `dataset/`，下次 Start 存回 launcher.json。`dataset/` 已在 .gitignore（既有追蹤的範例 `dataset/dual_rebel_task` 不受影響）。
+- 新 `recording/dataset_check.py`（純標準函式庫，GUI 與 recorder 共用）判斷 `<root>/<name>`：new / empty_dir（空資料夾，含空子資料夾）→ 建立；shell（只有 meta/info.json、0 episode：之前開了 recorder 沒存就關）→ 重建（LeRobot 無法 resume，會去連 Hub 而失敗，已實測）；dataset → 只有 sim/real、fps、相機組合、影像尺寸都相同才接續；incomplete（有 info.json 但缺 meta/episodes：被強制結束）、not_dataset（非空且非資料集）、file → 拒絕，不寫入也不刪除。只會刪除空資料夾或 shell 的那一個 info.json。
+- GUI：Save location 下方顯示 Start 會做什麼（新建／接續 N 個 episode 與其設定／不能接續的原因，紅字），隨目標、相機、解析度、fps 即時更新；Start 時不可行就擋下並說明。Browse 選到資料集資料夾本身 → 自動設為「上層 + 名稱」接續它。
+- 現況分類：根目錄 `dual_rebel_task/` = shell（未刪，屬使用者既有內容，等使用者決定）；`dataset/dual_rebel_task` = sim 資料集 1 episode（Real 模式選同名會被擋下）。
+- 驗證：新增 `tests/test_dataset_location.py`（狀態判斷、相容性、prepare_new 只刪空資料夾/shell；recorder 實際執行：新建 → 同名再錄一次接續成 2 episodes、空資料夾、shell 重建、非資料集資料夾拒絕且檔案保留、fps 不同拒絕且原資料集不變；GUI：舊 root 遷移、提示文字、Start 擋下、Browse 選資料集）。既有 GUI 測試因預設名稱在 dataset/ 已有 sim 資料集而被新檢查擋下，改用暫存位置。64 項測試通過。GUI 版面未截圖驗收。
+
+## 安裝流程簡化 + 文件同步（2026-10-21，Claude；使用者要求「安裝重簡，Isaac Sim 與部分選項改成文字詢問再決定」）
+
+- 新增 `setup/install.sh`：以文字詢問要裝什麼，列出計畫後才執行，再呼叫原有 `install_ros_ws.sh` / `install_quest_env.sh` / `install_record_env.sh`（三支維持可單獨執行）。問題：Isaac Sim 6.1（下載約 9 GB／用現有資料夾／略過）、錄製環境（新建 `.venv_record`／自己的 LeRobot 0.5.x python／略過）、舊版 iRC_ROS（預設否）。固定安裝：`igus_ws`、`.venv_quest`、CloudXR。選項 `--isaac download|skip|<path>`、`--record new|skip|<python>`、`--with-irc|--no-irc`、`--accept-cloudxr-eula`、`--write-bashrc`、`--yes`、`--dry-run`；答案也可由 stdin 逐行餵入。三個選項都給時不再確認；stdin 沒有答案且沒給選項則 exit 2（讓代理必須先問使用者）。
+- 約束：`recording/run_record.sh` / `run_replay.sh` 一律借用 Isaac Sim 的 py3.12 rclpy → **錄製（含實機 `--source real`）需要 Isaac Sim**。選「略過 Isaac Sim」＝只能做實機遙控，不能錄製；提問文字、手冊、README 都明講。要讓錄製脫離 Isaac 是另一項工作（未做）。
+- 安裝腳本本身不執行 sudo：apt 套件缺少時印出指令並 exit 3，人執行後重跑（`install_ros_ws.sh` 內的 `rosdep install -y` 仍可能對缺少的 apt 套件要求 sudo 密碼）。CloudXR 授權只在使用者明確傳 `--accept-cloudxr-eula` 時才執行，否則印出指令。非預設的 Isaac Sim / LeRobot 路徑印出 `export ISAAC_SIM=…` / `export LEROBOT_PY=…`（launcher 從環境變數讀）；`--write-bashrc` 才會寫入 `~/.bashrc`。
+- 選擇存於 `config/install_profile.env`（已加入 `.gitignore`）；`setup/check_env.sh` 只依它決定要不要檢查（未選的項目顯示 `skip`），**路徑一律來自環境變數／預設位置，與 launcher 看到的一致**（自訂路徑沒 export 時會 FAIL 並提示；`install.sh` 在最後檢查前自行 export 該兩個變數）（也可 `--no-sim --no-record`）；沒有檔案＝全部檢查（行為與舊版相同）。
+- 追加（同日，使用者要求「agent 也要先看電腦上已裝什麼、什麼版本」）：`install.sh --detect` 只列出已安裝項目與版本（Ubuntu、NVIDIA、磁碟、ROS、uv、各個 Isaac Sim［需 6.1.x，5.1 標為不可用］、各個 LeRobot python［需 0.5.x］、`.venv_quest`、`igus_ws`、CloudXR），不改任何東西；互動安裝開頭也印同一份清單，且只在偵測到 6.1.x 時才提示「使用現有 Isaac Sim」。代理 Step 0 跑 `--detect`，Step 1 先回報偵測結果，只問尚未決定的項目。以此機驗證（Isaac Sim 6.1.0-rc.26 可用、~/isaac-sim 5.1 標為不可用、LeRobot 0.5.1 可用）。
+- `AGENT_INSTALL.md` 改寫：Step 1 要代理先用文字問使用者上述三題（含已偵測到的環境與磁碟空間），Step 2 帶旗標執行 `install.sh`（先 `--dry-run` 看計畫）。`README.md` 的 Install 縮成 clone + `./setup/install.sh` + 問題表。
+- 手冊（`docs/operator_manual.html`）：Install 頁改為 6 步（需求／取得程式／執行安裝程式／網路／檢查／手動安裝），舊的逐步指令收進「By hand」；**原本以步驟序號記在瀏覽器的勾選會對不上新步驟（只是便利功能）**。補上實機錄製與四台相機（Real robot 新分頁「3 · Record real data」、相機表、接線）、Run 頁的實機選項與 Save location 規則、Data flow 的實機 topic / 資料集格式、Scripts 表（install.sh、run_cameras.sh、run_quest_real_arm.sh、launch 檔）、Troubleshooting（相機遺失／USB 頻寬／錄製缺 Isaac／資料集被拒）、更新「Validation & limits」（實機錄製、相機已實作；夾爪仍無）。README 修正：Y = 重置場景（原寫 B or Y 丟棄）、防撞距離 5 cm（原寫 12 cm）、實機錄製段落中過時的「不支援」。
+- 驗證：`bash -n` 三支腳本；`install.sh --dry-run` 以 stdin 餵答案測過各分支（找到／找不到 Isaac、選 1／2／3、找到既有 LeRobot、stdin 關閉 → exit 2、`--yes`、全旗標不確認）；以假 `dpkg`（PATH 前置）模擬缺 apt 套件 → 印 sudo 指令、exit 3；`check_env.sh` 在無 profile／`--no-sim --no-record`／profile 設 sim=0 record=1（顯示 note）下皆正確。手冊在瀏覽器載入：無 console 錯誤、無重複 id、所有 Copy 目標存在、步驟與分頁連動正常（未做視覺截圖驗收）。
+- **未驗證**：`install.sh` 的實際安裝路徑（Isaac Sim 下載解壓、`install_record_env.sh`、`install_ros_ws.sh` 由它呼叫）只做 dry-run；此機已裝齊，未在乾淨機器上跑過。測試時產生的 profile 已刪除，本機目前沒有 `config/install_profile.env`（check_env 視為全部檢查）。
+
+## 實機遙控跟不上 + 實機 Y 回 home（2026-10-21，Claude）
+
+- 使用者回報：實機遙控時命令不跟手，log 多次 `[right]/[left] let go: arm lags its command by 15-17 deg`；實機按 Y 手臂不動。負責 controller 的人表示 PID 已調好。
+- 診斷（teleop log `logs/teleop_20261021_142100.log`）：teleop 本身正常（迴圈 30 Hz、tick 數 ms、joint states 60 Hz）。落差在「命令 → 手臂」：`igus_ws/src/Igus_rebel/src/igus_rebel/config/controller.yaml` 的 JTC 是 **velocity** 命令介面（p 1.0、ff_velocity_scale 0.4），檔內註解記錄的手臂辨識：增益 1.26、延遲 0.078 s、速度一階延遲 0.16 s、**手臂端加速度上限約 0.52 rad/s²（約 30°/s²）**；且註明這組增益是模擬調出、「NOT yet run on the real arm」。teleop 每 33 ms 送單點短軌跡（0.15 s），JTC 每收到新訊息就從**量測位置**重新起算參考（closed loop），P 項幾乎看不到誤差；手一反向，手臂要約 1.3 s 才能從 20°/s 反轉，命令早已回頭，差距累加到 15° → let go。PID 不是槓桿：PID 是針對連續規劃軌跡調的；瓶頸是手臂加速度上限。
+- 離線模型（scratchpad，非專案檔）：同一手勢下，送速度 feedforward（cubic）或開 JTC open_loop_control 都仍超過 15°；只有「命令不超前量測 N°」能在所有情境下 < 15°。sweep：leash 6° @20°/s 無 trip，收尾過衝 ≤ 3.4°；@14°/s 過衝 ≤ 1.4°。
+- 修改（teleop，僅 `--backend real-ros`）：`--max-cmd-lead-deg`（實機預設 6，sim 0）——每拍 `leash()` 把關節命令限制在量測值 ±6°（最大關節、等比例縮放保留 IK 方向），命令等手臂；原 15° let-go 在 leash 下不會觸發，改加 stall 檢查 `stall_check()`：命令頂在 leash（≥ 0.8×）且手臂 `--stall-s` 1 s 內移動 < 0.5° → let go「arm does not follow its command（馬達未啟用、急停、卡住）」。Ethernet 後端與 dry run 不套用 leash（Ethernet 自有每拍上限，拉回可能觸發其故障停止）。
+- 實機 Y（使用者要求）：丟棄 episode → 兩臂放開 → 以 `--park-vel-deg` 10°/s、含兩臂碰撞 guard 回 HOME_DEG；任何 Quest 按鈕、重新握把（需先放開）或 Stop all / Ctrl+C 立即停在原處；按 A 停止時不會同時開始錄製（重同步按鍵狀態）。dry run 與 Ethernet 後端不動。GUI 實機執行頁加「⟲ Arms home (= Y)」、確認視窗與圖例說明。舊說明「實機 Y 不移動手臂」已標註更新。
+- 注意：資料集的 `action` 現在是 leash 後的命令（距 state ≤ 6°），不是自由跑的 IK 目標。Y 在手臂仍移動時按下，move_to 從量測位置起算，可能有小頓挫（未測）。
+- 驗證：新 `tests/test_real_ros_tracking.py`（假 igus driver = JTC velocity 介面 p 1.0/ff 0.4、每訊息從量測起算 + 上述 plant，實際跑 teleop real-ros 與假 Quest）：同一個快速來回手勢，無 leash → 落差 15.1°、let go（重現使用者現象）；leash 6° → 最大 6.3°、全程保持握持；手臂不動 → stall let go；Y 回 home ±1°；Y 後按 A 停在半路且只有一個 `reset` 事件；Y 中途 SIGINT（Stop all）→ 立即停止；dry run 按 Y 不動。全部 71 項測試通過。
+- **未在實機驗證**：plant 常數來自舊增益時期的擬合，leash 設計對此不敏感，但 stall 檢查（1 s / 0.5°）與 6° 在實機的手感需確認。第一次實測：單臂、home 附近、慢慢握持，留意是否誤報「arm does not follow」。過衝在刀具附近重要，可用 `--max-joint-vel` 降速。
+- 給 controller 負責人（建議查證，非定論）：(1) 串流單點訊息讓 JTC 每次從量測位置重起參考，P 項看不到誤差；(2) 約 0.52 rad/s² 的加速度上限才是 15°+ 落差的主因——可查機器人端 jog / 關節加速度設定（RobotControl / iRC 組態）能否提高；(3) 2026-09-30 的 p 1.0 / ff 0.4 是否已在實機跑過。
+
+## 實機遙控提速（2026-10-21，Claude；使用者提供 RViz pretest log，要求提高速度）
+
+- 使用者 log（右臂 MoveIt，RViz 加速度 scaling 0.1 = 0.52 rad/s²）：三段規劃軌跡皆 `Goal reached, success!`；home → 全 0（joint3 65°、joint5 50°）約 4.7 s，起步 0.57 s 時 joint3 只走 3.6°，與約 30°/s² 加速度上限一致；推估峰值約 18°/s。結論：參考軌跡加速度不超過手臂能力時（MoveIt 的做法）控制器追得很好。
+- 改動（只有 `--backend real-ros`；Ethernet 後端維持 0.35 rad/s / 0.15 m/s / 30°/s，`ETHERNET_DEFAULTS`）：預設關節 0.35 → **0.52 rad/s（30°/s）**、TCP 0.15 → **0.25 m/s**、旋轉 30 → **45°/s**、leash 6 → **10°**，並新增 **`--max-joint-acc` 0.45 rad/s²**：`accel_step()` 讓關節命令以等比例縮放方式加減速（|Δv| ≤ a·dt、可在目標前煞停 |v| ≤ √(2a·剩餘)），之後再套 leash；`arm.v_cmd` 由實際送出的命令求得，握持時歸零。stall 檢查改為「目前命令距手臂 ≥ max(3°, 0.3×leash) 且手臂 `--stall-s` 內移動 < 0.5°」（加速度限制下凍結手臂不會一直頂在 leash，舊條件不觸發）。
+- 離線模型 sweep：無加速度限制時 30–40°/s 收尾過衝 9–20°；有限制 ≤ 2.3°。來回動作的跟手程度不因提速改善（瓶頸是手臂加速度）。
+- 驗證（假 driver + 實際 teleop）：0.3 m 橫掃停下，最大關節 48.7°：新預設 90% 到位 2.94 s、過衝 2.6°；舊預設 3.14 s、3.35°；新速度但無加速度限制過衝 11.7°。快速來回不 let go（落差 ≤ 10°），凍結手臂仍 let go。新增 `accel_step` 單元測試。73 項測試通過。
+- 提速效益有限（此例約 6%，模型 60° 單向約 15–20%）：大角度移動時間由手臂約 30°/s² 加速度決定。要明顯變快需提高機器人端加速度（RobotControl / iRC 組態），屆時把 `--max-joint-acc` 調到略低於新上限即可。未在實機驗證；資料集 action 為加速度限制 + leash 後的命令。
+
+## 最新一次執行的 log：`latest_run/`（2026-10-21，Claude；使用者要求「每次執行覆蓋一份最新 log，記錄移動與命令，方便 debug」）
+
+- `latest_run/`（.gitignore）：GUI 每次按 Start 先清空（只刪 *.log / *.csv），各程序的輸出另存 `latest_run/<process>.log`（teleop / driver / record / viz / sim；`logs/` 的時間戳 log 照舊保留）。
+- teleop 每次啟動覆蓋 `latest_run/teleop_trace.csv`（終端機執行也會；`--trace ''` 或 `ROBOT_REMOTE_TRACE=""` 關閉）：每拍每臂一列 —— t、mode（teleop / home / reset / park 與其 settle）、tracked、engaged、grip、trigger、hand_xyz（操作者座標）、target_xyz（手臂底座座標的法蘭命令）、ik1-6、cmd1-6（實際送出，經速度／加速度／leash／碰撞限制）、meas1-6、meas_age_ms、lag_deg、cmd_speed_dps、limited（speed / accel / leash / guard）、sent、note（該拍所有 log 訊息，相同訊息每秒最多一次）。檔頭含啟動時間、argv、各限制值與單位。約 8 KB/s。
+- debug 時先看 `latest_run/teleop_trace.csv` 與 `latest_run/teleop.log` / `driver.log`。
+- 測試：trace 內容測試（欄位、約 30 Hz、engaged 列數值、lag ≤ 10.5°、limited 有 accel/leash、note 含 engaged）；GUI 測試確認 `latest_run/teleop.log` 副本；teleop 相關測試模組設定 `ROBOT_REMOTE_TRACE=""`、GUI 測試把 LATEST_DIR 導向暫存，不會覆蓋操作者的 latest_run。74 項測試通過。
+
+## 第一次 latest_run 檢查（2026-10-21 15:03 實機雙臂，Claude）
+
+- 「錄了資料集卻沒東西」：該次 `config/launcher.json` 為 `"record": false`（GUI 第 4 區未勾 Record），recorder 沒啟動（latest_run 沒有 record.log），A/X 只送出 toggle 事件、無人接收。GUI 現在在錄製關閉時按 A/X 會顯示提示與黃色橫幅「RECORDING IS OFF」。
+- 手臂表現（trace）：無 let go、無碰撞暫停；命令→手臂落差中位數約 4°、最大 9.8°（< leash 10°）；手臂實際速度 p95 約 26°/s；Y 回 home 兩次皆在 1° 內；結束回 0° 正常。98% 的握持時間命令受加速度限制，手部目標→手臂距離中位數 15–20°（最大 40°）。
+- **發現並修正 bug**：`teleop_viz.py --source real`（GUI Real 的 RViz）把 `/quest_teleop/joint_states` 轉發到 `/left|right/joint_states`——正是 igus driver 發布、teleop（與 recorder 的 state）讀取量測值的 topic，並在 `/left`、`/right` 再開一組 robot_state_publisher（與 driver 的同名、同 TF 前綴）。結果 teleop 會讀回自己稍早的量測值：trace 中左臂 release 後量測值凍結 0.7 s（meas_age 仍 1–2 ms），接著跳 11.6°，手臂比最後命令多跑 7°；之後量測值每約 3 拍才更新。此 bug 從 real-ros（igus driver 有 /left /right namespace）取代 Ethernet 後就存在，也會汙染實機錄製的 state。修正：viz 改用自己的 namespace / frame `viz_left`、`viz_right`（relay `/viz_{side}/joint_states`、RSP frame_prefix `viz_{side}/`、world→viz_{side}/base_link、目標姿態轉發到 `/teleop_viz/{side}/target`），rviz 設定同步。新測試 `tests/test_viz_namespace.py`：舊版在 40 s 內往 `/left/joint_states` 灌了 162,605 筆而失敗；新版無任何 `/left|right/joint_states` 發布者、`viz_left` TF 正常。
+- release 後過衝（各次 6–19°）中，88.11 s 那次明確由凍結的回授造成；其他次可能部分是物理（約 25°/s、約 30°/s² 需 10°+ 停止距離）——修正後請再跑一次看 trace 確認。
+- 75 項測試通過。
+
+## 事故：測試讓實體左臂移動（2026-10-21 15:18，Claude）——所有代理必讀
+
+- 經過：使用者 15:18:15 以 GUI 啟動實機雙臂（driver 在 ROS_DOMAIN_ID 42、localhost）。同時 Claude 在同一台電腦跑 `tests/test_real_ros_tracking.py` 的加速度比較（假 driver + **真正的 teleop `--backend real-ros --arms left`**）。測試沿用 `ros_env.sh` 的 domain 42，測試 teleop 的軌跡命令送進了實體左臂的 `/left/rebel_arm_trajectory_controller/joint_trajectory`，假 driver 的 `/left/joint_states` 也被實機 teleop 讀到。實體左臂突然移動；使用者關閉後無人受傷。實機 teleop log 當時只有警告「1 other publisher(s) on /left/...joint_trajectory」。（同日 14:21、15:03 的實機 session 無外來 publisher，未受影響。）
+- 修正（防止再發生）：
+  1. `tests/ros_isolation.py`：所有用到 ROS 的測試模組**第一個 import**，強制 `ROS_DOMAIN_ID` / `ROBOT_REMOTE_DOMAIN_ID` = 97、localhost only、清掉 `ROBOT_REMOTE_TARGET`、關閉 trace；`check()` 遇到機器人 domain（42 / 91 / 11 / 0）即拒絕。新增測試確認測試 context 的 domain 是 97。
+  2. teleop（real-ros）：啟動時若手臂命令 topic 上有其他 publisher → **拒絕啟動**（RobotError；dry run 僅警告）；執行中每 0.5 s 檢查，一出現就**放開兩臂、停止送命令**直到它消失；自動移動（home / Y / 回 0°）的 guard 也會因此停止。新增測試：啟動前有外來 publisher → 拒絕；握持中出現 → 放開且不再送命令。
+- **規則**：實機 driver 可能在跑時，代理不得在 domain 42 執行任何會建立 ROS 節點的程式（測試、ad-hoc 腳本、ros2 topic pub）。ad-hoc 腳本也要先 `import ros_isolation` 或明確設定非機器人 domain；執行前先 `pgrep -af "ros2_control_node|quest_dual_arm_teleop"` 確認。
+- 事故中的加速度比較數據無效（被實機干擾）；隔離後重測：假手臂（plant 上限 0.52）上 0.45 / 0.52 / 0.6 / 0.8 rad/s²：0.3 m 橫掃 90% 到位 2.94 / 2.81 / 2.71 / 2.54 s、過衝 2.7 / 3.6 / 5.0 / 6.1°，快速來回皆不 let go。實機預設改 **0.52**；GUI Real 區新增加速度選單（0.45 / 0.52 / 0.6 / 0.8，存 `real_accel`，傳 `--max-joint-acc`）。實機真正上限未確認（trace 的自動移動估計約 26–34°/s²，需更多資料）。78 項測試通過。
+
+## 放手後過衝再拉回 + PID 是否調過（2026-10-21 15:31 session，Claude）
+
+- 使用者：Record 預設打開；控制時仍「overshoot 後 damping 回來」，問 PID 是否真的調過。
+- Record：GUI 讀設定時一律把 Record 設為勾選（`load_cfg`）。
+- trace（15:31，加速度 0.52）：乾淨的放手事件（52.8 / 60.3 / 39.6 s）放手時 15–31°/s → 手臂越過最後命令 12–14°（約 1.2 s 後達峰），再被 JTC（P 1.0、時間常數約 1 s）慢慢拉回，4 s 後仍差 1–4°。物理上與約 30°/s² 減速上限一致。另 4 秒窗內有幾次被下一次握持汙染（26–40° 的數字不可用）。
+- PID 歷史（Igus_rebel，`controller.yaml` 最後 commit 2026-10-02，本機無未提交修改；`~/rebel_controller_tuning` 不在本機）：09-09 實機調參（p 4、ff 1.0/0.9，但當時 override 約 37%）→ 改 Override 100 後實機 25° 移動過衝 15.5°、震 6 s → 09-30 改為**模擬擬合**的 p 1.0 / ff 0.4，檔內註明「NOT yet run on the real arm」；09-29 MoveIt 實機也記錄「fast transit 收尾過衝」，處理方式是把 MoveIt 降到約 9°/s，而非重調增益。結論：本機執行的增益未經實機驗證；若 controller 負責人另有調好的值，未進到此 repo。
+- teleop 修改：**release brake**（real-ros，`--no-release-brake` 關閉）：放手或追蹤遺失時，以量測關節速度（joint_states 差分 EMA，`arm.v_meas`）算自然停止點 `q + v|v|/(2a) + v·BRAKE_DELAY_S`（a = --max-joint-acc，BRAKE_DELAY_S 預設 0.25 s = 延遲 0.078 + 速度延遲 0.16，可用 `ROBOT_REMOTE_BRAKE_DELAY` 調），以減速所需時間送最後一點；若停止點過近另一臂則改為原地。假 ReBeL：放手後拉回 9.5° → 2.7°，最遠點 18.2° → 12.1°（delay 0.35：拉回 1.6°、最遠 12.8°）。新增測試。79 項測試通過（全部在 domain 97）。未在實機驗證。
+
+## 錄製 resume 變慢 + 實機 J3/J5 追隨測試（2026-10-21 15:46–16:25，Claude）
+
+- 錄製：15:46 session 的 episode 1 只錄到約 8 fps（223/224 幀 stale + late）。原因：`LeRobotDataset.resume()` 預設 `image_writer_threads=0`，接續既有資料集時 PNG 在 add_frame 內同步寫入（3 台 640×480 ≈ 120 ms/幀）。修正：resume 也傳 `image_writer_threads`；另把 recorder 的 ROS callback 改到背景執行緒。新測試 `tests/test_record_load.py`（3×640×480 雜訊影像、兩個 driver 200 Hz、新建 + 接續）：未修正時接續只有 26 幀/3 s；修正後兩者皆 ≥ 80 幀、無 stale / late。該 episode 1 資料不可用。
+- 使用者授權（16:0x）：只在 home ↔ zero 之間、只動 J3 與 J5（直線方向）測實機。新工具 `real_robot/j3j5_step_test.py`：J1/2/4/6 命令恆為 0、J5 = 50/65·J3、測試段 J3 指令 [10,55]（快速組縮短 [20,45]/[25,40]），快速移動時 J3 超出 [3,62]、慢速 approach/return 超出 [-2,67]、J1/2/4/6 偏 > 2°、狀態逾時或有其他 publisher 即保持停止；以與 teleop 相同的方式串流（30 Hz 單點、加速度限制、leash）。先在 domain 97 假 ReBeL 乾跑：初版 fast 組在模型上衝到 68°（超出 home）→ 縮短範圍、收緊中止門檻、回 home 目標 64° 後再乾跑兩次（從 0 與從 home）皆在範圍內。
+- 實機（左臂，使用者在急停旁，Claude 啟動 driver arms:=left，完成後關閉）：全部組別無中止，J1/2/4/6 最大偏差 0.02°，結束於 J3 64.0 / J5 49.2。結果（`latest_run/j3j5_left.csv`）：
+  normal（30°/s、a 0.52、leash 10）：落後 8.5°、手臂峰值 32°/s、**過衝 1.3–1.7°、0.84–0.97 s 內進入 1°**；fast（45°/s、a 0.8、leash 14）：峰值仍約 32–34°/s、**過衝 8–9°、2.5 s 內未進入 1°**；faster（a 1.2）：過衝 9–10°；中途停（模擬放手）有 brake：過衝 6.7°、末端 1.1°；無 brake：15.4°、2.5 s 後仍差 4.3°。手臂實際加速度約 50–75°/s²（遠高於 controller.yaml 的 0.52 rad/s² 估計）。
+- 結論與修改：瓶頸是控制迴路（ff 0.4 需約 8–10° 落後才能 30°/s，命令停時累積落後 + 延遲 → 過衝），不是加速度上限；提高速度/加速度只增加過衝。GUI 移除 fast 速度與 0.6/0.8 加速度選項；release brake 延遲 0.25 → **0.45 s**（實機停點比預測遠 6.7° @ 31°/s）。80 項測試通過。
+- 給 controller 負責人（依實測的建議，需其驗證）：plant 增益約 1.26，ff_velocity_scale 0.4 只補約一半的速度，其餘靠 P 項的位置誤差；可試 ff 約 0.7–0.8（≈1/1.26）以減少串流時的落後與停止過衝；改動後可直接用 `real_robot/j3j5_step_test.py --arm left --profiles normal stop` 比較。
+
+## 實機 PID / 放手煞車測試（2026-10-21 16:3x，Claude；使用者授權在 home↔zero 只動 J3/J5 自行測試）
+
+- 方法：左臂 driver（Claude 啟停），增益以 `ros2 param set /left/rebel_arm_trajectory_controller gains.joint{3,5}.{p,ff_velocity_scale}` 執行期修改（不改 Igus_rebel 的 controller.yaml；driver 重啟即回原值，每次測完已改回 p 1.0 / ff 0.4），`real_robot/j3j5_step_test.py`（新增 `--out`、`--no-home`）；log `latest_run/pid_*.csv`。
+- 結果（30°/s 上下移動）：A p1.0/ff0.4：落後 8.6–9°、過衝 1.7°、1.0 s 進 1°；B ff0.6：落後 6°、過衝 1.2–1.9°、0.6–0.9 s；C ff0.8：落後 5°、過衝 1.4–1.7°、0.6–0.8 s，但阻尼變差——上一段還在動時開始下一段會過衝 7.6°（觸發 62° 中止），放手煞車難校準（delay 0.15 時停在預測點後 12°）。
+- 中途停（模擬放手）：無煞車 A/B 皆 16–20° 過衝並慢慢拉回；**A + 煞車 0.45 s：過衝 0.2°、無拉回（最好）**；B + 煞車 0.3 s：4.5°，0.45 s：3.6°（並有小幅回拉）。
+- 中止 2 次（C 的兩次），皆為安全邊界觸發後原地保持，手臂始終在 home↔zero 線上（J1/2/4/6 0°）；結束時以 5 s 單點送回 J3 64 / J5 49.2 後關閉 driver。
+- 結論：維持目前增益（p 1.0 / ff 0.4）+ 放手煞車 0.45 s（已是程式預設）。ff 0.6 可讓移動中更跟手（落後 9→6°）但放手停止較差；ff 0.8 不建議。若 controller 負責人改增益，需重新校準 `ROBOT_REMOTE_BRAKE_DELAY`（可用 `j3j5_step_test.py --profiles stop`）。
+
+## 實機 PID / lookahead 調整（2026-10-21 16:4x–17:0x，Claude；使用者授權自行調 PID 與速度測試，範圍仍為 home↔zero 只動 J3/J5）
+
+- 量測 command→arm 延遲（交叉相關時間位移）。短程（J3 20↔45，30°/s）：p1/ff0.4/la0.15 0.28 s、過衝 1.6°；la 0.08 0.14 s 但過衝 4.7°；p2/ff0.4 0.27 s；**p2/ff0.6 0.18 s、2.1–2.3°**；p1/ff0.6/la0.08 0.09 s 但 6–10°；p3/ff0.6 0.18 s、1.7–2.0°；p3/ff0.7 0.14 s、2.6–3.0°；p4/ff0.6 0.17 s、1.6–1.9°；p3/ff0.6/la0.12 0.13 s、3.2–4.1°。
+- 長程（10↔55）：p4/ff0.6 在 10→55 過衝 7°+（起動時手臂約 0.3 s 幾乎不動、累積約 8° 落後，高 P 追回後過衝）→ 觸發 62° 中止；**p2/ff0.6：延遲 0.18 s、過衝 1.0–1.6°、0.47–0.64 s 進 1°**（基準 p1/ff0.4：0.28 s、1.5–1.8°、0.9–1.0 s）。
+- p2/ff0.6 放手煞車：delay 0.2 → 7.6°、0.3 → 3.8°、0.45 → 4.1°（無煞車 19°）；基準增益 + 0.45：0.2°。
+- 共 3 次安全中止（C ff0.8、p4 長程、…），皆停在 home↔zero 線上；一次中止後 J5 偏離線 5°，測試工具拒絕啟動，以 3 s 單點把 J5 拉回線上。每次測完增益改回 p1/ff0.4，結束送回 J3 64 / J5 49.2 並關閉 driver。
+- 實作：`config/real_controller_gains.json`（standard p1/ff0.4 brake 0.45；responsive p2/ff0.6 brake 0.3）；`dual_arm_driver.launch.py gains:=standard|responsive|upstream`（在載入 controller.yaml 後覆寫我們的暫存參數檔，不改 Igus_rebel 原檔）；GUI Real 區「Arm gains」選單，teleop 依所選設定 `ROBOT_REMOTE_BRAKE_DELAY`。**預設 standard**：responsive 只在 J3/J5 測過，launch 會套用到六軸；J1/J2/J4/J6 需使用者授權另測。`real_robot/j3j5_step_test.py` 新增 `--lookahead`、`tune` profile（J3 20↔45）。80 項測試通過。
+
+## 右臂 J2–J5 實機測試（2026-10-21 17:1x，Claude；使用者授權：只有右臂，J2 0..20、J4 -21..0、J3/J5 home↔zero）
+
+- 新工具 `real_robot/joint_step_test.py`（單軸，其餘軸保持；只接受 J2/J4 且範圍不得超出授權；指令範圍內縮 6°、快速移動時超出「授權範圍內縮 0.5°」或其他軸偏 > 2° 即中止；回 0 時先 5°/s 到距 0 1°，再 2 s 單點到 0，避免越過 0）。假手臂乾跑時，內縮 4° 版本 J2 回 0 越過到 -1°、J4 衝到 -20.5°（中止）→ 改為上述後乾跑通過。
+- 右臂（Claude 啟停 driver，standard 啟動，執行期切換 J2–J5 增益，測完改回）：全部無中止，其他軸最大 0.03°，結束在全 0。
+  延遲 standard → responsive（p2/ff0.6）：J2 0.28 → 0.21 s、J4 0.28 → 0.20 s、J3/J5 0.28 → 0.18 s；responsive 過衝 J2 1.0–1.2°、J4 1.3–1.5°、J3/J5 1.8°（standard 1.2°），無振盪。放手：J2/J4 有煞車 ≤ 1.1°（無煞車 1.7–4.8°）；右臂 J3/J5 有煞車 7.5–8°（左臂 0.2–4°）、無煞車 15–19°。
+- `config/real_controller_gains.json` responsive 加 `"joints": [joint2..joint5]`，launch 只覆寫這些軸（J1/J6 未測、維持原增益）。GUI 預設仍為 standard；左臂 J2/J4 未以 responsive 測過。
+
+## 消除「過衝再拉回」：煞車減速 + 放手滑行（2026-10-21 17:3x–18:0x，Claude；先左臂後右臂，使用者要求優先右臂）
+
+- 左臂（授權：J2 0→+20、J4 0→+20、J3/J5 home↔zero；開始時手臂被放在 J2 20 / J4 20，先以 6 s 單點回 0）J3/J5 短程（20↔45）：反應時間（命令開始動 → 手臂動 0.5°）約 0.27–0.30 s，與設定無關（手臂本身）。加速度 1.0：過衝 13–17°；送速度（JTC 用 velocities 當 ff）：更落後（頂到 leash）且過衝 7–10°；ff 0.7 / 0.8（p2）：過衝 3.3–4.2 / 5.5–6.5°，t90 只快 0.1 s。
+- 右臂 J3/J5（responsive p2/ff0.6）：W1 目前（煞車 0.52）t90 1.50 s、過衝 1.6–1.7°（再拉回）；**W2 煞車減速 0.3：t90 1.73 s、過衝 0.3–0.4°、停住即在 1° 內（無拉回）**；0.2：0.2°、t90 1.93 s；加 D 0.1 無效；standard + 0.3：0.1–0.2°、t90 1.86 s。長程 10↔55（W2）：過衝 0.3°。
+- **發現危險 bug**：舊放手煞車用 joint_states 差分速度（EMA），driver 在兩個 STATUS 間重複同值後跳變 → 速度尖峰數倍 → 停止點算到 30° 外。右臂一次放手被送到 J3 0°（命令 0.000），滑到 2.8° 觸發中止（仍在範圍內）。teleop 用同一估計，實際遙控也可能發生。
+- teleop 修改：(1) `--max-joint-dec`（real-ros 預設 0.3）：`accel_step(..., adec=)` 讓命令接近目標時以較小減速度煞車；(2) 放手 / 追蹤遺失改為 **glide**：以命令自身速度（無量測雜訊）計算停止距離（以 --max-joint-acc 煞車、上限 GLIDE_MAX_DEG 15°、若太接近另一臂則原地保持），每拍繼續串流加速度限制命令直到停下；重新握持立即取消。實機（右臂，腳本同邏輯）：glide 放手後滑 19°、拉回 1.5°（無處理 19.9° 過衝）；假手臂：拉回 0.8°（無處理 11.1°）、移動過衝 0.9°。`BRAKE_DELAY_S` / `real_controller_gains.json` 的 brake_delay_s 不再使用（GUI 仍設環境變數，無影響）。80 項測試通過。
+- 右臂結束在全 0、左臂在 J3 64 / J5 49.2，driver 皆已關閉。代價：每次移動收尾約多 0.2 s；放手後會再滑一段（減速距離），但不會再拉回。尚未以實際 Quest 遙控驗證手感。
+
+## 網路查找 + 右臂控制方法測試（2026-10-21 18:0x–18:4x，Claude）
+
+- 查找：ros2_controllers JTC 文件（`open_loop_control`：插值從上次命令起算、但同時關閉回授）、RobCo 串流文件（位置串流易過衝，建議高頻或位置+速度串流）、遙控延遲補償（Smith predictor / 手部預測）、Ruckig（jerk 限制即時軌跡生成）、AIRLab ros2-igus-rebel（同樣 JTC + velocity，無調參資訊）。
+- `open_loop_control` 在本 driver 為唯讀參數（只能啟動時設），未實測；送速度（位置+速度串流）先前已實測更差。
+- 右臂 J3/J5（授權範圍內）：**p2 / ff0.8 + 命令收尾減速 0.3** 最佳——短程 t90 1.56 s、過衝 0.1–0.2°；長程 10↔55 過衝 0.2–0.3°、立即在 1° 內、延遲 0.21 s；ff0.9 無再改善；收尾減速 0.4 過衝回到 1.7–2.6°；lookahead 0.05 過衝 9–11°。J2：過衝 1.0 → 0.1–0.2°；J4：1.3–1.5 → 0.8–1.0°。
+- 放手滑行減速（p2/ff0.8）：0.52 → 滑 21.8°、拉回 5.3°；**0.4 → 滑 20.1°、拉回 0.4°**；0.3 → 滑 24.9°、拉回 0.5°。
+- 舊的量測速度放手煞車在右臂又兩次把停止點算到 0°（觸發安全中止，皆在範圍內）：已從兩個測試工具移除（teleop 先前已改為 glide）。`j3j5_step_test.py` glide 目標未限制在測試範圍內導致迴圈卡住（手臂靜止保持），已修正。
+- 預設更新：`real_controller_gains.json` responsive = p2 / ff0.8（J2–J5）；teleop `--glide-dec` 0.4（新參數）、`GLIDE_MAX_DEG` 20。GUI Arm gains 預設仍為 standard。左臂 ff0.8 只在無收尾減速時測過（過衝大），左臂 J2/J4 未以 responsive 實測。80 項測試通過。右臂結束在全 0，driver 已關閉。
+
+## 放開即停：precise 速度 + 收尾檢查（2026-10-21 18:4x–19:1x，Claude）
+
+- 右臂放手方式比較（J3/J5、p2/ff0.8）：@~35°/s 不論命令方式手臂都要約 20° / 1.2 s 才停（hold at measured：滑 21.2° 再拉回 20.8°；glide 1.5：19.4° / 12.3°；glide 0.4：23.8° / 3.2°）→ 手臂端減速約 30°/s²（加上約 0.3 s 反應）是瓶頸，應為 RobotControl / iRC 的 jog 加減速設定（driver 未設定），需使用者/controller 負責人決定是否調整。@~15°/s：glide 滑 6.3° / 0.71 s、拉回 0.2°。
+- GUI Speed 選單：`precise`（--max-joint-vel 0.26、--max-lin-vel 0.12、--max-rot-vel 22，預設）/ `normal`（30°/s）；`config/launcher.json` 已設為 precise。18:58 實機雙臂 session（precise）：無 let go / stall / 外來 publisher / 碰撞暫停；放手後 TCP 再移動中位數 0.5–1.0 cm（最大 3.2）、拉回 ≤ 0.3 cm；握持中目標→手臂中位數 1.9–2.7 cm（p95 約 6 cm）。手快速移動時落後較多（速度上限）。
+- 收尾檢查：(1) recorder 結束時背景 executor 未先停 → node 銷毀後 spin 執行緒拋 Traceback（資料已 finalize，無損）：改為先 `executor.shutdown()` 再 join，測試加「輸出不得有 Traceback」。(2) 放手那拍 `v_cmd` 歸零，glide 實際是「命令先停、再從靜止緩步移向停止點」；改成延續放手速度在假手臂反而拉回 2.8°（原 0.8°），且原行為已在實機驗證 → 保留原行為並寫明為刻意設計。80 項測試通過。
+- commit 範圍：除 `dataset/`（實機錄製已覆蓋原本追蹤的範例資料集）、使用者自己的 `dual_rebel_task/`、`j6_swing_test.py` 外全部，含另一個 session 完成的安裝流程（`setup/install.sh` 等，README / 手冊已引用）。

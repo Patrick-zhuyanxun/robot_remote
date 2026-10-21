@@ -1,0 +1,19 @@
+{
+  "_comment": "Joint trajectory controller gains for the real arms, applied by real_robot/dual_arm_driver.launch.py (gains:=<name>) on top of Igus_rebel's controller.yaml (which is not modified). brake_delay_s = the teleop's release-brake delay calibrated for those gains. Measured on the real left arm 2026-10-21 (real_robot/j3j5_step_test.py, J3/J5 home<->zero, 30 deg/s): standard p1/ff0.4: command->arm delay 0.28 s, overshoot 1.5-1.8 deg, settle 0.9-1.0 s, release with brake 0.45 s: 0.2 deg. responsive p2/ff0.6: delay 0.18 s, overshoot 1.0-1.6 deg, settle 0.5-0.6 s, release with brake 0.3 s: ~4 deg. responsive was tested on J3/J5 only (operator-approved range); the launch applies it to all six joints. Rejected: ff 0.8 (less damped, overshoot 7.6 deg), p4 (7+ deg overshoot on long moves), lookahead < 0.15 s (5-10 deg overshoot). 2026-10-21 right arm (J2 0..20, J4 -21..0, J3/J5 home<->zero, operator-approved): responsive delay J2 0.28->0.21 s, J4 0.28->0.20 s, J3/J5 0.28->0.18 s, overshoot 1-1.8 deg, no oscillation; release brake J2/J4 <=1.1 deg, J3/J5 7.5-8 deg (left arm 0.2-4). J1/J6 not tested: 'joints' limits the preset to J2-J5, J1/J6 keep the upstream gains. 2026-10-21 ~18:30 right arm with the teleop's gentle command braking (--max-joint-dec 0.3): p2/ff0.8 beats p2/ff0.6 - J3/J5 t90 1.56 vs 1.73 s, overshoot 0.1-0.3 vs 0.3-0.4 deg (also on 10<->55), J2 0.1-0.2 vs 1.0 deg, J4 0.8-1.0 vs 1.3-1.5 deg; ff0.9 no better; braking 0.4 brings overshoot back (1.7-2.6). responsive -> ff 0.8 (left arm tested with ff0.8 only on J3/J5, without the gentle braking).",
+  "standard": {
+    "p": 1.0,
+    "ff_velocity_scale": 0.4,
+    "brake_delay_s": 0.45
+  },
+  "responsive": {
+    "p": 2.0,
+    "ff_velocity_scale": 0.8,
+    "brake_delay_s": 0.3,
+    "joints": [
+      "joint2",
+      "joint3",
+      "joint4",
+      "joint5"
+    ]
+  }
+}

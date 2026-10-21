@@ -15,12 +15,13 @@ assumed / watched pose), arm bases from the hand-eye calibrations (world = the L
 Quest controller as TF {side}/controller under the frame "quest" (operator frame: x forward, y left, z up,
 placed by --quest-offset). The controller sphere is green while its grip drives the arm.
 
-Publishes
-  /left/joint_states, /right/joint_states   joint1..6 relayed from /dual_arm/isaac_joint_states
-                                            (feeds two robot_state_publishers with frame_prefix left/ right/)
-  TF world -> {left,right}/base_link        arm mounts from dual_arm_rig_v2.usda
-  TF {side}/link6 -> {side}/control_tcp     the teleop control point (--tcp-preset, default flange)
-  TF {side}/base_link -> {side}/hand_axes   at the TCP, rotated by --yaw-deg: these axes are the
+Publishes (own namespace and frames viz_left / viz_right: never the igus driver's /left, /right topics or frames)
+  /viz_left/joint_states, /viz_right/joint_states   joint1..6 relayed from /dual_arm/isaac_joint_states or
+                                            /quest_teleop/joint_states (two robot_state_publishers, frame_prefix viz_left/ viz_right/)
+  /teleop_viz/{side}/target                 the teleop's TCP target re-framed onto viz_{side}/base_link
+  TF world -> viz_{left,right}/base_link    arm mounts from dual_arm_rig_v2.usda / the hand-eye calibrations
+  TF viz_{side}/link6 -> viz_{side}/control_tcp     the teleop control point (--tcp-preset, default flange)
+  TF viz_{side}/base_link -> viz_{side}/hand_axes   at the TCP, rotated by --yaw-deg: these axes are the
                                             directions the TCP target moves when the HAND moves
                                             red = hand forward, green = hand left, blue = hand up
   /teleop_viz/markers                       text labels
@@ -139,7 +140,11 @@ class TeleopViz(Node):
         self.r_axes = Rotation.from_euler("z", yaw_deg, degrees=True)
         self.yaw_deg = yaw_deg
         self.q = {s: None for s in SIDES}
-        self.js_pub = {s: self.create_publisher(JointState, f"/{s}/joint_states", 10) for s in SIDES}
+        # Own namespace / frames (viz_left, viz_right): /left|right/joint_states and the left/ right/ TF frames belong
+        # to the igus ROS driver on the real arms, and the teleop reads its measured joints there. Relaying onto those
+        # topics fed the teleop its own stale joints (frozen for 0.7 s, then 7 deg overshoot; 2026-10-21).
+        self.js_pub = {s: self.create_publisher(JointState, f"/viz_{s}/joint_states", 10) for s in SIDES}
+        self.target_pub = {s: self.create_publisher(PoseStamped, f"/teleop_viz/{s}/target", 10) for s in SIDES}
         self.cmd_pub = {s: self.create_publisher(JointState, f"/cmd_{s}/joint_states", 10) for s in SIDES}
         self.q_cmd = {s: None for s in SIDES}
         self.lag = LagStats()
@@ -152,6 +157,7 @@ class TeleopViz(Node):
             self.create_subscription(JointState, "/dual_arm/isaac_joint_states", self.on_js, 10)
         for s in SIDES:
             self.create_subscription(PoseStamped, f"/quest_teleop/{s}/hand", lambda m, s=s: self.on_hand(s, m), 10)
+            self.create_subscription(PoseStamped, f"/quest_teleop/{s}/target", lambda m, s=s: self.on_target(s, m), 10)
         self.create_subscription(String, "/quest_teleop/state", self.on_state, 10)
         self.create_subscription(JointState, "/quest_teleop/action", self.on_action, 10)
         self.create_timer(1.0, self.lag_panel)
@@ -165,18 +171,18 @@ class TeleopViz(Node):
             w = load_world_T_base(calibration)
             for s in SIDES:
                 t = np.linalg.inv(w["left"]) @ w[s]
-                static.append(tf_msg("world", f"{s}/base_link", t[:3, 3], Rotation.from_matrix(t[:3, :3]).as_quat(), now))
+                static.append(tf_msg("world", f"viz_{s}/base_link", t[:3, 3], Rotation.from_matrix(t[:3, :3]).as_quat(), now))
             # operator frame "quest": axes = left base axes rotated by --yaw-deg, origin by --quest-offset
             static.append(tf_msg("world", "quest", quest_offset, self.r_axes.as_quat(), now))
         else:
             q_base = Rotation.from_euler("z", ARM_BASE_YAW_DEG, degrees=True).as_quat()
             for s in SIDES:
-                static.append(tf_msg("world", f"{s}/base_link", ARM_BASE_XYZ[s], q_base, now))
+                static.append(tf_msg("world", f"viz_{s}/base_link", ARM_BASE_XYZ[s], q_base, now))
             # operator frame drawn relative to the left arm base, as in the real view (same --quest-offset)
-            static.append(tf_msg("left/base_link", "quest", quest_offset, self.r_axes.as_quat(), now))
+            static.append(tf_msg("viz_left/base_link", "quest", quest_offset, self.r_axes.as_quat(), now))
         for s in SIDES:
-            static.append(tf_msg(f"{s}/link6", f"{s}/control_tcp", self.tcp, [0, 0, 0, 1], now))
-            static.append(tf_msg(f"{s}/base_link", f"cmd_{s}/base_link", (0, 0, 0), (0, 0, 0, 1), now))
+            static.append(tf_msg(f"viz_{s}/link6", f"viz_{s}/control_tcp", self.tcp, [0, 0, 0, 1], now))
+            static.append(tf_msg(f"viz_{s}/base_link", f"cmd_{s}/base_link", (0, 0, 0), (0, 0, 0, 1), now))
         self.static.sendTransform(static)
         self.get_logger().info(f"teleop frames: hand axes = arm base axes rotated {yaw_deg:+.0f} deg about Z")
 
@@ -203,6 +209,11 @@ class TeleopViz(Node):
                 if self.q[s] is not None:
                     self.lag.trail[s] = max(self.lag.trail[s], float(np.rad2deg(np.max(np.abs(self.q_cmd[s] - self.q[s])))))
 
+    def on_target(self, side, msg):
+        """The teleop's TCP target is in {side}/base_link; show it on this view's copy of that frame."""
+        msg.header.frame_id = f"viz_{side}/base_link"
+        self.target_pub[side].publish(msg)
+
     def on_hand(self, side, msg):
         self.lag.on_hand(side, msg)
         p, o = msg.pose.position, msg.pose.orientation
@@ -223,7 +234,7 @@ class TeleopViz(Node):
             if self.q[s] is None:
                 continue
             p = self.chain.fk(self.q[s])[:3, 3]
-            out.append(tf_msg(f"{s}/base_link", f"{s}/hand_axes", p, self.r_axes.as_quat(), now))
+            out.append(tf_msg(f"viz_{s}/base_link", f"viz_{s}/hand_axes", p, self.r_axes.as_quat(), now))
         if out:
             self.tf.sendTransform(out)
 
@@ -243,13 +254,13 @@ class TeleopViz(Node):
             k += 1
 
         for s in SIDES:
-            f = f"{s}/hand_axes"
+            f = f"viz_{s}/hand_axes"
             text(f, (0.12, 0, 0), "hand FORWARD", (1.0, 0.3, 0.3))
             text(f, (0, 0.12, 0), "hand LEFT", (0.3, 1.0, 0.3))
             text(f, (0, 0, 0.12), "hand UP", (0.4, 0.6, 1.0))
             text(f, (0, 0, 0.17), "(translation directions only - never rotates)", (0.8, 0.8, 0.8), 0.02)
-            text(f"{s}/base_link", (0, 0, -0.06), f"{s.upper()} arm base_link (IK frame)", (1, 1, 1), 0.035)
-            text(f"{s}/control_tcp", (0, 0, -0.04), f"{s} control point ({self.tcp_preset}) - rotates with the wrist", (1, 1, 0.3), 0.025)
+            text(f"viz_{s}/base_link", (0, 0, -0.06), f"{s.upper()} arm base_link (IK frame)", (1, 1, 1), 0.035)
+            text(f"viz_{s}/control_tcp", (0, 0, -0.04), f"{s} control point ({self.tcp_preset}) - rotates with the wrist", (1, 1, 0.3), 0.025)
         if self.hand_state:  # Quest controllers (both sources)
             for s in SIDES:
                 st = self.hand_state.get(s)

@@ -68,7 +68,7 @@ class Replayer(Node):
 def main():
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--name", help="dataset folder name under --root")
-    p.add_argument("--root", default=os.environ.get("ROBOT_REMOTE_DATASETS", "~/datasets"))
+    p.add_argument("--root", default=os.environ.get("ROBOT_REMOTE_DATASETS", str(Path(__file__).resolve().parents[1] / "dataset")))
     p.add_argument("--path", help="dataset folder (instead of --name/--root)")
     p.add_argument("--episode", type=int, default=0)
     args = p.parse_args()

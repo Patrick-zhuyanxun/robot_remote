@@ -40,6 +40,12 @@ def setup(context):
     # The upstream file keys its sections by bare node names (controller_manager, rebel_arm_trajectory_controller),
     # which only match nodes in the root namespace: re-key them as /**/<name> so /left/... and /right/... match.
     ctrl = yaml.safe_load(ctrl_src.read_text())
+    gains_name = LaunchConfiguration("gains").perform(context)
+    if proto == "rebel" and gains_name != "upstream":  # config/real_controller_gains.json, measured on the real arm
+        g = json.loads((ROOT / "config" / "real_controller_gains.json").read_text())[gains_name]
+        jtc = ctrl["rebel_arm_trajectory_controller"]["ros__parameters"]
+        for j in g.get("joints", jtc["joints"]):  # only the joints the preset was tested on (others: upstream)
+            jtc["gains"][j].update(p=float(g["p"]), ff_velocity_scale=float(g["ff_velocity_scale"]))
     ctrl_cfg = Path(tempfile.mkstemp(prefix="rebel_controllers_", suffix=".yaml")[1])
     ctrl_cfg.write_text(yaml.safe_dump({f"/**/{k}": v for k, v in ctrl.items()}))
     actions = []
@@ -81,5 +87,7 @@ def generate_launch_description():
         DeclareLaunchArgument("left_ip", default_value="", description="default: config/real_arms.json"),
         DeclareLaunchArgument("right_ip", default_value="", description="default: config/real_arms.json"),
         DeclareLaunchArgument("hardware_protocol", default_value="rebel", choices=["rebel", "mock_hardware"]),
+        DeclareLaunchArgument("gains", default_value="standard", choices=["standard", "responsive", "upstream"],
+                              description="JTC gains from config/real_controller_gains.json (upstream = controller.yaml)"),
         OpaqueFunction(function=setup),
     ])

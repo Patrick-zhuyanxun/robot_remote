@@ -11,3 +11,5 @@ setup/*.log
 dataset/
 datasets/
 config/launcher.json
+config/install_profile.env
+latest_run/
