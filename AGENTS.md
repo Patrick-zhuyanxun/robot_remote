@@ -323,3 +323,10 @@
 - GUI Speed 選單：`precise`（--max-joint-vel 0.26、--max-lin-vel 0.12、--max-rot-vel 22，預設）/ `normal`（30°/s）；`config/launcher.json` 已設為 precise。18:58 實機雙臂 session（precise）：無 let go / stall / 外來 publisher / 碰撞暫停；放手後 TCP 再移動中位數 0.5–1.0 cm（最大 3.2）、拉回 ≤ 0.3 cm；握持中目標→手臂中位數 1.9–2.7 cm（p95 約 6 cm）。手快速移動時落後較多（速度上限）。
 - 收尾檢查：(1) recorder 結束時背景 executor 未先停 → node 銷毀後 spin 執行緒拋 Traceback（資料已 finalize，無損）：改為先 `executor.shutdown()` 再 join，測試加「輸出不得有 Traceback」。(2) 放手那拍 `v_cmd` 歸零，glide 實際是「命令先停、再從靜止緩步移向停止點」；改成延續放手速度在假手臂反而拉回 2.8°（原 0.8°），且原行為已在實機驗證 → 保留原行為並寫明為刻意設計。80 項測試通過。
 - commit 範圍：除 `dataset/`（實機錄製已覆蓋原本追蹤的範例資料集）、使用者自己的 `dual_rebel_task/`、`j6_swing_test.py` 外全部，含另一個 session 完成的安裝流程（`setup/install.sh` 等，README / 手冊已引用）。
+
+## X 鍵改為切換旋轉座標系（2026-10-21 19:2x，Claude；使用者要求）
+
+- 按鍵：A（右）= 開始／儲存 episode，B（右）= 丟棄，**X（左）= 切換 TOOL ↔ BASE 旋轉座標系**（沿用 `set_rot_frame`，握持中的手臂於放開再握時才套用），Y（左）= 重置。原本 A/X 都是錄製。GUI 收到 teleop 的 `rotation frame:` 確認即更新按鈕並寫入 `config/launcher.json`（X 切換也會被記住）。
+- GUI：圖例 X 改用獨立顏色（teal）並新增說明，文字精簡讓整個圖例可見；Real 區原本一行過長（RViz / 回 home / 回 0° 被截掉），改為多行；視窗高度 820 → min(900, 螢幕高 − 80)，否則 Start 按鈕被擠出畫面（截圖確認）。
+- 手冊：A / X / Y 說明、控制器圖（X `data-k="x"`、`--frame` 顏色、亮暗主題）、提示列縮短（原本被裁切）、Y 說明去掉矛盾的「Simulator only」；README 按鍵表、資料流同步；recorder 提示文字。
+- 新測試：左手 X 兩次 → rot_frame tool → base → tool，且不送 toggle 事件。81 項測試通過；手冊與 GUI 以瀏覽器 / 截圖檢查。未用實際頭盔按 X 驗證。

@@ -48,7 +48,7 @@ Manual step-by-step commands are on the Install page of the manual.
    The GUI starts Isaac → Quest teleop → recorder in that order (about 1 minute).
 2. On the Quest: open **Browser** → `https://nvidia.github.io/IsaacTeleop/client/v1.3.131/` →
    enter the **Server IP** shown in the GUI → tap the *accept cert* link and accept → back → **Connect**.
-3. Hold **Grip** to move an arm, **Trigger** closes its gripper, **A/X** starts / saves an episode,
+3. Hold **Grip** to move an arm, **Trigger** closes its gripper, **A** starts / saves an episode, **X** switches the rotation frame,
    **B** discards it, **Y** resets the scene (sim: arms home, box flaps closed; an open episode is discarded). **Stop all** in the GUI saves any open episode and shuts everything down.
    The run page's **Rotation: TOOL / BASE frame** button switches how hand rotation is applied
    (tool = about the tool's own axes, base = about the fixed arm-base axes; translation always follows the base axes).
@@ -73,9 +73,10 @@ with the project default for future sessions. Existing datasets are left in plac
 | Twist the controller handle | Tool spins about its own Z (flange) axis. |
 | Nod / tilt the controller | Tool tilts about its own X / Y axes. |
 | Trigger (index finger) | Gripper closes proportionally (0 = open, 1 = closed). |
-| A or X | Start recording → press again to save the episode. |
+| A (right) | Start recording → press again to save the episode. |
+| X (left) | Switch the rotation frame TOOL ↔ BASE (takes effect at the next grip; same as the run page button). |
 | B | Discard the current episode. |
-| Y (left) | Reset the scene (simulation only): arms home, grippers open, box flaps closed; an open episode is discarded. |
+| Y (left) | Reset: an open episode is discarded; sim: arms home, grippers open, box flaps closed; real arms: both move home at 10°/s (any button, a grip or Stop all stops them). |
 
 Left controller drives the left arm, right controller the right arm. "Facing the robot" in the GUI
 mirrors the mapping (`--yaw-deg 180 --swap-hands`).
@@ -88,7 +89,7 @@ Quest 3/3S ──Wi-Fi/WebRTC──► CloudXR runtime ─┐
                           quest_dual_arm_teleop.py  (py3.10 + rclpy, IK per arm)
                             │ /dual_arm/isaac_joint_commands  (joint targets, gripper carriages)
                             │ /quest_teleop/action            (14-D commanded action, every tick)
-                            │ /quest_teleop/events            ("toggle" / "discard" / "reset" from A/X, B, Y)
+                            │ /quest_teleop/events            ("toggle" / "discard" / "reset" from A, B, Y)
                             ▼
               Isaac Sim 6.1 (run_dual_arm_sim.py, OmniGraph ROS 2 bridge)
                             │ /dual_arm/isaac_joint_states    (21 joints)

@@ -386,6 +386,20 @@ class RealRosTrackingTests(unittest.TestCase):
         self.assertLess(back_on, 4.0)  # fake ReBeL: 2.7 deg with the brake, 9.5 without
         self.assertGreater(back_off, back_on + 4.0)
 
+    def test_x_button_switches_the_rotation_frame(self):
+        """Left X: rotation frame tool <-> base (no recording event); A on the right still starts / saves."""
+        frames = []
+
+        def press_x_twice(t):
+            return [0, 0, 0], 0.0, (0.3 < t < 0.5) or (1.0 < t < 1.2), False
+
+        def probe(t, node):
+            if not frames or frames[-1] != node.rot_frame:
+                frames.append(node.rot_frame)
+        _, events = self.session(["--rot-frame", "tool"], press_x_twice, 1.6, probe=probe)
+        self.assertEqual(frames, ["tool", "base", "tool"])
+        self.assertNotIn("toggle", events)
+
     def test_leash_helpers(self):
         q_meas = np.zeros(6)
         q = teleop.leash(np.deg2rad([20, -10, 0, 0, 5, 0]), q_meas, np.deg2rad(6))

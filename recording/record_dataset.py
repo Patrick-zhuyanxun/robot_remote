@@ -5,7 +5,7 @@ Inputs (ROS 2, read through Isaac Sim's bundled Python-3.12 rclpy - see run_reco
   /dual_arm/isaac_joint_states     -> observation.state (14): arm_{left,right}_joint1..6 + gripper closedness
   /quest_teleop/action             -> action            (14): same names, commanded by the teleop
   /dual_arm/{head,wrist_left,wrist_right}/rgb -> observation.images.{head,wrist_left,wrist_right}
-  /quest_teleop/events             <- Quest buttons: "toggle" (A/X: start / save), "discard" (B), "reset" (Y: scene reset,
+  /quest_teleop/events             <- Quest buttons: "toggle" (A: start / save), "discard" (B), "reset" (Y: scene reset,
                                       discards an open episode)
   /clock                           -> sampling clock (sim time)
 
@@ -313,7 +313,7 @@ def main():
     if args.source == "real":
         print("[rec] REAL robot: wall-clock sampling, Y = discard the open episode (the teleop moves the arms home)",
               flush=True)
-    print("[rec] controls: Quest A/X = start / save episode, B = discard, Y = reset scene | keyboard: Enter = start/save, "
+    print("[rec] controls: Quest A = start / save episode, B = discard, Y = reset scene (X = rotation frame) | keyboard: Enter = start/save, "
           "d = discard, q = quit", flush=True)
     threading.Thread(target=keyboard_thread, args=(node.events,), daemon=True).start()
 

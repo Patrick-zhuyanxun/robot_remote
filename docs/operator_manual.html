@@ -12,6 +12,7 @@
   --quest: #2f6fcf;       /* Quest controller blue */
   --quest-soft: #dfe9f8;
   --violet: #8a5cc8;
+  --frame: #1f8f80;       /* X button: rotation frame */
   --reset: #d4553f;        /* Y = scene reset */
   --ok: #2f8a4b; --warn: #b7791f; --danger: #c2413a;
   --code-bg: #eceee9;
@@ -23,13 +24,13 @@
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #15191c; --surface: #1d2327; --ink: #e7eae6; --muted: #a2aba7; --rule: #323a3f;
-    --accent: #f08a3a; --accent-soft: #3a2a1d; --quest: #6ea3f2; --quest-soft: #1f2d42; --violet: #b394e6; --reset: #ff7b72;
+    --accent: #f08a3a; --accent-soft: #3a2a1d; --quest: #6ea3f2; --quest-soft: #1f2d42; --violet: #b394e6; --reset: #ff7b72; --frame: #3fb9a8;
     --ok: #5cc27a; --warn: #e0a64a; --danger: #ef7068; --code-bg: #252c31; color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --bg: #15191c; --surface: #1d2327; --ink: #e7eae6; --muted: #a2aba7; --rule: #323a3f;
-  --accent: #f08a3a; --accent-soft: #3a2a1d; --quest: #6ea3f2; --quest-soft: #1f2d42; --violet: #b394e6; --reset: #ff7b72;
+  --accent: #f08a3a; --accent-soft: #3a2a1d; --quest: #6ea3f2; --quest-soft: #1f2d42; --violet: #b394e6; --reset: #ff7b72; --frame: #3fb9a8;
   --ok: #5cc27a; --warn: #e0a64a; --danger: #ef7068; --code-bg: #252c31; color-scheme: dark;
 }
 * { box-sizing: border-box; }
@@ -123,7 +124,7 @@ td code { white-space: nowrap; }
 .legend svg [data-k] { cursor: pointer; }
 .c-body { fill: var(--surface); stroke: var(--muted); stroke-width: 3; }
 .c-face { fill: var(--code-bg); stroke: var(--muted); stroke-width: 2; }
-.c-grip { fill: var(--ok); } .c-trig { fill: var(--warn); } .c-b1 { fill: var(--quest); } .c-b2 { fill: var(--violet); } .c-b3 { fill: var(--reset); }
+.c-grip { fill: var(--ok); } .c-trig { fill: var(--warn); } .c-b1 { fill: var(--quest); } .c-b2 { fill: var(--violet); } .c-b3 { fill: var(--reset); } .c-b4 { fill: var(--frame); }
 .c-txt { fill: var(--surface); font-family: var(--f-display); font-weight: 700; font-size: 13px; pointer-events: none; }
 .c-cap { fill: var(--ink); font-family: var(--f-display); font-weight: 600; font-size: 14px; }
 .c-hint { fill: var(--muted); font-family: var(--f-mono); font-size: 11px; }
@@ -204,7 +205,7 @@ details.qa div { padding: 0 14px 12px; }
   <div class="group"><p>Every session</p>
     <div class="board">
       <button class="tile" type="button" data-go="run"><span class="ico">▶</span><span><b>Run a session</b><span>Open the launcher, fill in the task, press Start, record. Y resets the scene between takes.</span></span></button>
-      <button class="tile q" type="button" data-go="controls"><span class="ico">✋</span><span><b>Controller buttons</b><span>Grip, trigger, A/X save, B discard, Y reset. Tap a button on the picture to see what it does.</span></span></button>
+      <button class="tile q" type="button" data-go="controls"><span class="ico">✋</span><span><b>Controller buttons</b><span>Grip, trigger, A save, B discard, X frame, Y reset. Tap a button on the picture to see what it does.</span></span></button>
       <button class="tile" type="button" data-go="record"><span class="ico">●</span><span><b>Record &amp; check data</b><span>Good takes, and a playback window to pick a dataset and watch or replay an episode.</span></span></button>
       <button class="tile" type="button" data-go="trouble"><span class="ico">?</span><span><b>Troubleshooting</b><span>Search by symptom, including lag / slow motion.</span></span></button>
     </div>
@@ -422,7 +423,7 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
       </div>
       <div class="step" data-step="Record">
         <h2>Record episodes</h2>
-        <p>Press <strong>A</strong> or <strong>X</strong> to start an episode, do the task, press A/X again to save. Press <strong>B</strong> to throw away a bad take. Press <strong>Y</strong> (left controller) to reset the scene for the next take: both arms go home, the grippers open and the box flaps close. Y during a take discards that take. The launcher's <em>Start / Save</em>, <em>Discard</em> and <em>Reset scene</em> buttons do the same. The banner shows <em>RECORDING</em>, the elapsed sim time and the episode count.</p>
+        <p>Press <strong>A</strong> (right controller) to start an episode, do the task, press A again to save. Press <strong>B</strong> to throw away a bad take. Press <strong>Y</strong> (left controller) to reset the scene for the next take: both arms go home, the grippers open and the box flaps close. Y during a take discards that take. The launcher's <em>Start / Save</em>, <em>Discard</em> and <em>Reset scene</em> buttons do the same. The banner shows <em>RECORDING</em>, the elapsed sim time and the episode count.</p>
         <p class="note ok"><strong>Loop without stopping anything:</strong> A → do the task → A (save) → Y (reset) → A → …</p>
       </div>
       <div class="step" data-step="Stop all">
@@ -439,13 +440,13 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
   <h1>Controller buttons</h1>
   <p class="lede">The left controller drives the left arm, the right controller the right arm. Tap a button on the picture or in the list.</p>
   <div class="legend">
-    <svg viewBox="0 0 340 300" role="img" aria-label="Quest controllers with grip, trigger, A/X, B and Y buttons">
+    <svg viewBox="0 0 340 300" role="img" aria-label="Quest controllers with grip, trigger, A, B, X and Y buttons">
       <g transform="translate(85,0)">
         <text class="c-cap" x="0" y="18" text-anchor="middle">Left → left arm</text>
         <ellipse class="c-body" cx="0" cy="80" rx="62" ry="48"/>
         <rect class="c-body" x="-24" y="104" width="48" height="140" rx="10"/>
         <ellipse class="c-face" cx="0" cy="84" rx="40" ry="26"/>
-        <circle class="c-b1" data-k="ax" cx="-15" cy="80" r="12"/><text class="c-txt" x="-15" y="85" text-anchor="middle">X</text>
+        <circle class="c-b4" data-k="x" cx="-15" cy="80" r="12"/><text class="c-txt" x="-15" y="85" text-anchor="middle">X</text>
         <circle class="c-b3" data-k="y" cx="15" cy="92" r="12"/><text class="c-txt" x="15" y="97" text-anchor="middle">Y</text>
         <rect class="c-grip" data-k="grip" x="-32" y="140" width="11" height="56" rx="2"/>
         <polygon class="c-trig" data-k="trig" points="24,106 42,117 27,152"/>
@@ -455,24 +456,25 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
         <ellipse class="c-body" cx="0" cy="80" rx="62" ry="48"/>
         <rect class="c-body" x="-24" y="104" width="48" height="140" rx="10"/>
         <ellipse class="c-face" cx="0" cy="84" rx="40" ry="26"/>
-        <circle class="c-b1" data-k="ax" cx="-15" cy="80" r="12"/><text class="c-txt" x="-15" y="85" text-anchor="middle">A</text>
+        <circle class="c-b1" data-k="a" cx="-15" cy="80" r="12"/><text class="c-txt" x="-15" y="85" text-anchor="middle">A</text>
         <circle class="c-b2" data-k="b" cx="15" cy="92" r="12"/><text class="c-txt" x="15" y="97" text-anchor="middle">B</text>
         <rect class="c-grip" data-k="grip" x="-32" y="140" width="11" height="56" rx="2"/>
         <polygon class="c-trig" data-k="trig" points="24,106 42,117 27,152"/>
       </g>
-      <text class="c-hint" x="170" y="285" text-anchor="middle">grip · trigger · A/X save · B discard · Y reset</text>
+      <text class="c-hint" x="170" y="285" text-anchor="middle">A save · B discard · X frame · Y reset</text>
     </svg>
     <div class="ctl">
       <button type="button" data-k="grip" aria-pressed="false"><span class="sw" style="background:var(--ok)"></span><strong>Grip (hold)</strong><span>The arm follows your hand while held. Release to freeze it. Re-grip anywhere: the arm does not jump.</span></button>
       <button type="button" data-k="move" aria-pressed="false"><span class="sw"></span><strong>Move the hand</strong><span>The flange moves along the arm-base axes: forward, left, up.</span></button>
-      <button type="button" data-k="twist" aria-pressed="false"><span class="sw"></span><strong>Twist the handle</strong><span>Tool frame (default): the tool spins about its own Z (flange) axis; nod or tilt the controller to tilt the tool about its own X / Y axes. Base frame: the hand's rotation is applied about the fixed arm-base axes. Switch with the <em>Rotation: … frame</em> button on the launcher's run page.</span></button>
+      <button type="button" data-k="twist" aria-pressed="false"><span class="sw"></span><strong>Twist the handle</strong><span>Tool frame (default): the tool spins about its own Z (flange) axis; nod or tilt the controller to tilt the tool about its own X / Y axes. Base frame: the hand's rotation is applied about the fixed arm-base axes. Switch with the <strong>X</strong> button (left controller) or the <em>Rotation: … frame</em> button on the launcher's run page.</span></button>
       <button type="button" data-k="trig" aria-pressed="false"><span class="sw" style="background:var(--warn)"></span><strong>Trigger</strong><span>The gripper closes in proportion to the pull.</span></button>
-      <button type="button" data-k="ax" aria-pressed="false"><span class="sw" style="background:var(--quest)"></span><strong>A or X</strong><span>Start recording an episode; press again to save it.</span></button>
+      <button type="button" data-k="a" aria-pressed="false"><span class="sw" style="background:var(--quest)"></span><strong>A (right)</strong><span>Start recording an episode; press again to save it.</span></button>
+      <button type="button" data-k="x" aria-pressed="false"><span class="sw" style="background:var(--frame)"></span><strong>X (left) · rotation frame</strong><span>Switches between TOOL and BASE frame (same as the run page's Rotation button). It takes effect at the next grip: an arm you are driving keeps its frame until you release it.</span></button>
       <button type="button" data-k="b" aria-pressed="false"><span class="sw" style="background:var(--violet)"></span><strong>B (right)</strong><span>Discard the current episode.</span></button>
-      <button type="button" data-k="y" aria-pressed="false"><span class="sw" style="background:var(--reset)"></span><strong>Y (left) · reset scene</strong><span>Simulator only: both arms are released and go back to the home pose, the grippers open, then the four box flaps close. An episode that is still recording is discarded. Grip again to continue. On the real arms Y discards the open episode and moves both arms back home at 10 deg/s on their own; any button, a grip or Stop all stops them there (dry run: no motion). Reset the objects by hand.</span></button>
+      <button type="button" data-k="y" aria-pressed="false"><span class="sw" style="background:var(--reset)"></span><strong>Y (left) · reset scene</strong><span>Sim: both arms are released and go back to the home pose, the grippers open, then the four box flaps close. An episode that is still recording is discarded. Grip again to continue. On the real arms Y discards the open episode and moves both arms back home at 10 deg/s on their own; any button, a grip or Stop all stops them there (dry run: no motion). Reset the objects by hand.</span></button>
     </div>
   </div>
-  <p class="note"><strong>Rotation frame.</strong> The run page's <em>Rotation: TOOL frame / BASE frame</em> button switches how a hand rotation is applied while the teleop runs (sim and real arms). Translation always follows the arm-base axes. An arm you are holding keeps its frame until you <strong>release and grip again</strong>, so the tool never swings mid-grip. The choice is remembered for the next start; CLI <code>--rot-frame tool|base</code>, or <code>ros2 topic pub --once /quest_teleop/set_rot_frame std_msgs/msg/String "data: base"</code>.</p>
+  <p class="note"><strong>Rotation frame.</strong> The <strong>X</strong> button (left controller) or the run page's <em>Rotation: TOOL frame / BASE frame</em> button switches how a hand rotation is applied while the teleop runs (sim and real arms). Translation always follows the arm-base axes. An arm you are holding keeps its frame until you <strong>release and grip again</strong>, so the tool never swings mid-grip. The choice is remembered for the next start; CLI <code>--rot-frame tool|base</code>, or <code>ros2 topic pub --once /quest_teleop/set_rot_frame std_msgs/msg/String "data: base"</code>.</p>
   <p class="note">Speeds are capped: 0.5 m/s, 90°/s rotation, 45°/s per joint (the ReBeL limit). Fast hand motions are followed smoothly with a short lag. Wrist pitch reaches about ±40° from the home pose before joint 5 hits its limit. The arms are modelled as capsules; a step that would bring their surfaces closer than 5 cm is refused and the arms hold with a warning (move apart, release and grip again).</p>
 </section>
 
@@ -487,8 +489,8 @@ cat ~/isaac-sim-6.1/VERSION</code></pre><button type="button" data-copy="c-isaac
   </div>
   <div data-panel="r-good">
     <ul>
-      <li>One episode is one attempt at the task, from A/X to A/X. Keep it short and complete. Discard failed attempts with B instead of keeping them.</li>
-      <li>Start every take from the same scene: press <strong>Y</strong> after saving (arms home, flaps closed), then A/X.</li>
+      <li>One episode is one attempt at the task, from A to A. Keep it short and complete. Discard failed attempts with B instead of keeping them.</li>
+      <li>Start every take from the same scene: press <strong>Y</strong> after saving (arms home, flaps closed), then A.</li>
       <li>The recorder takes a frame every 1/30 s of <strong>simulation</strong> time. If Isaac runs slower than real time (cameras, extra viewports, a busy CPU), 10 s of your time is less than 10 s of data. The sim log's <code>[dual_arm] [timing]</code> line shows the current speed.</li>
       <li>Real arms: frames are taken on <strong>wall-clock</strong> time at the chosen fps and the recorder counts late ticks in its log. Stop all saves an open episode <em>before</em> the arms return to 0°.</li>
       <li>An episode saves itself after 120 s (sim time in the simulator).</li>
@@ -619,7 +621,7 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
         <tr><td><code>/dual_arm/isaac_joint_commands</code></td><td>teleop → Isaac</td><td>Position targets for <code>arm_{left,right}_joint1..6</code> and the gripper carriages</td></tr>
         <tr><td><code>/dual_arm/isaac_joint_states</code></td><td>Isaac → teleop, recorder</td><td>All 21 rig joints, sim-time stamps</td></tr>
         <tr><td><code>/quest_teleop/action</code></td><td>teleop → recorder</td><td>14-D commanded action every tick; held while the grip is released</td></tr>
-        <tr><td><code>/quest_teleop/events</code></td><td>teleop → recorder</td><td><code>toggle</code> (A/X), <code>discard</code> (B) or <code>reset</code> (Y: discards an open episode)</td></tr>
+        <tr><td><code>/quest_teleop/events</code></td><td>teleop → recorder</td><td><code>toggle</code> (A), <code>discard</code> (B) or <code>reset</code> (Y: discards an open episode)</td></tr>
         <tr><td><code>/dual_arm/reset_scene</code></td><td>teleop → Isaac</td><td><code>std_msgs/Empty</code>: close the four box flaps (sent by Y after the arms are home)</td></tr>
         <tr><td><code>/dual_arm/box_pose</code></td><td>Isaac → anyone</td><td>Box body pose (frame <code>world</code>)</td></tr>
         <tr><td><code>/quest_teleop/{left,right}/hand</code>, <code>/quest_teleop/state</code>, <code>/quest_teleop/{left,right}/target</code></td><td>teleop → RViz</td><td>Controller poses, grip state per arm, TCP target</td></tr>
@@ -787,7 +789,7 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
     <ol>
       <li>Wire this PC and both controllers to the 192.168.3.x subnet (left <code>192.168.3.11</code>, right <code>192.168.3.12</code>). Close the RViz pre-test and any other driver of these arms.</li>
       <li>Launcher → <strong>Real igus ReBeL arms</strong>, tick the arms in “Arms to control”, press Start. It starts the igus driver of each arm (motors enabled), then the teleop: the arms move to home, then wait for the Quest.</li>
-      <li>Connect the Quest. Each arm moves while its controller’s <strong>GRIP</strong> is held. The <em>Rotation: … frame</em> button switches tool / base frame rotation (applies at the next grip).</li>
+      <li>Connect the Quest. Each arm moves while its controller’s <strong>GRIP</strong> is held. The <strong>X</strong> button (or the <em>Rotation: … frame</em> button) switches tool / base frame rotation (applies at the next grip).</li>
       <li><strong>Stop all</strong>: the arms return to 0°, then teleop, RViz and drivers close.</li>
       <li>The Y button moves both real arms home at 10 deg/s (any button, a grip or Stop all stops them); it does not reset objects.</li>
       <li><strong>"arm lags its command" / the arm lets go during fast motion:</strong> the ReBeL accelerates at only about 30 deg/s² behind about 0.25 s of delay, so the teleop keeps each command within <code>--max-cmd-lead-deg</code> (6 deg) of the measured joints and the arm catches up instead of being let go. "arm does not follow its command" means it did not move at all for 1 s at that limit: motors off, e-stop, or blocked.</li>
@@ -802,7 +804,7 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
     <ol>
       <li>Plug the cameras in and check them: <code>./recording/run_cameras.sh --list</code>, then <code>--snapshot</code> (one JPEG per camera in <code>logs/camera_snapshots/</code>) and <code>--test 10</code> (all together; ARC about 47 decoded fps, Orbbecs 30 fps).</li>
       <li>Launcher → <strong>Real igus ReBeL arms</strong>, tick the arms, tick <strong>Record</strong> and the cameras, name the dataset, Start. Order: igus drivers → teleop → recorder (opens the cameras) → RViz.</li>
-      <li>Connect the Quest. A/X starts and saves an episode, B or Y discards it (a button never moves the real arms). <strong>Stop all</strong> saves an open episode first, then the arms return to 0°.</li>
+      <li>Connect the Quest. A starts and saves an episode, B discards it, X switches the rotation frame, Y discards and moves both arms home at 10°/s (any button, a grip or Stop all stops them). <strong>Stop all</strong> saves an open episode first, then the arms return to 0°.</li>
     </ol>
     <p>Without the launcher, with the drivers and <code>run_quest_real_arm.sh</code> already running:</p>
     <div class="copyrow"><pre><code id="c-recreal">./recording/run_record.sh --source real --name my_real_task --task "pick up the box"</code></pre><button type="button" data-copy="c-recreal">Copy</button></div>
@@ -960,9 +962,9 @@ ds = LeRobotDataset(f"local/{root.name}", root=root)</code></pre><button type="b
   var FLOW = {
     quest: ["Meta Quest 3 / 3S", "Runs the NVIDIA CloudXR web client in the Quest Browser. Streams head and controller poses plus button states to the workstation over Wi-Fi (WebRTC). Nothing is installed on the headset."],
     cloudxr: ["CloudXR runtime", "Started by the teleop program from isaacteleop. Acts as the OpenXR runtime on the workstation and serves the secure WebSocket on port 48322. Licence accepted once per machine."],
-    teleop: ["Quest teleop · quest_dual_arm_teleop.py", "Python 3.10 in .venv_quest with the system ROS 2 rclpy. While grip is held it turns hand motion into a flange target (translation in the arm-base frame, rotation in the tool frame), rate-limits it, solves IK per arm and publishes joint targets. Also publishes the 14-D action and the A/X / B events for the recorder; Y resets the scene (arms home, then /dual_arm/reset_scene). A [timing] line every 5 s shows loop rate, IK time and sim speed."],
+    teleop: ["Quest teleop · quest_dual_arm_teleop.py", "Python 3.10 in .venv_quest with the system ROS 2 rclpy. While grip is held it turns hand motion into a flange target (translation in the arm-base frame, rotation in the tool frame), rate-limits it, solves IK per arm and publishes joint targets. Also publishes the 14-D action and the A / B events for the recorder; X switches the rotation frame; Y resets the scene (arms home, then /dual_arm/reset_scene). A [timing] line every 5 s shows loop rate, IK time and sim speed."],
     isaac: ["Isaac Sim 6.1 · run_dual_arm_sim.py", "Loads the dual-arm rig USD (fixed box with four flaps), moves both arms to the home pose and runs an OmniGraph ROS 2 bridge: joint commands in (newest only); joint states, /clock and the camera images out. Closes the flaps on /dual_arm/reset_scene and publishes /dual_arm/box_pose. A [dual_arm] [timing] line every 5 s shows frames/s and sim speed. Uses Isaac's own Python and ROS 2 libraries."],
-    recorder: ["Recorder · record_dataset.py", "LeRobot 0.5.1 (Python 3.12) with Isaac's rclpy. Takes one frame every 1/fps of simulation time (real arms: wall time, USB cameras read inside the recorder): measured state, commanded action and the camera images. A/X starts and saves an episode, B discards it, a scene reset (Y) discards an open one."],
+    recorder: ["Recorder · record_dataset.py", "LeRobot 0.5.1 (Python 3.12) with Isaac's rclpy. Takes one frame every 1/fps of simulation time (real arms: wall time, USB cameras read inside the recorder): measured state, commanded action and the camera images. A starts and saves an episode, B discards it, a scene reset (Y) discards an open one."],
     dataset: ["LeRobotDataset v3.0", "One folder per dataset name: parquet files for state and action, AV1 videos per camera, metadata with the task text. Load it with LeRobotDataset(\"local/<name>\", root=...)."],
     gui: ["Launcher GUI · launcher/run_gui.sh", "Collects the settings, starts Isaac, then the teleop, then the recorder, watches their logs for readiness pins each program to its own CPU cores and offers Start / Save, Discard, Reset scene, the rotation-frame switch and Stop all. Optionally opens RViz."]
   };

@@ -70,6 +70,7 @@ DEFAULTS = {
     "rot_frame": "tool",  # Quest hand rotation applied about the tool's own axes, or about the fixed base axes
 }
 RESET_COLOR = "#ff7b72"  # Y button (scene reset) in the controller legend
+FRAME_COLOR = "#3fb9a8"  # X button (rotation frame tool <-> base) in the controller legend
 FRAME_TEXT = {"tool": "Rotation: TOOL frame  (click: base)", "base": "Rotation: BASE frame  (click: tool)"}
 C = {"bg": "#1f2329", "panel": "#2a2f37", "fg": "#e8e8e8", "dim": "#9aa3ad", "accent": "#4ea1ff",
      "ok": "#3fb950", "warn": "#d29922", "err": "#f85149", "rec": "#ff3b30"}
@@ -121,7 +122,7 @@ def load_cfg():
             cfg["real_dry_run"] = True
             CONFIG.parent.mkdir(parents=True, exist_ok=True)
             CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
-        cfg["record"] = True  # Record starts ticked every time (a session without it saved nothing on A/X, 2026-10-21)
+        cfg["record"] = True  # Record starts ticked every time (a session without it saved nothing on A, 2026-10-21)
         # former defaults (~/datasets, robot_remote/datasets) and the project folder itself -> robot_remote/dataset
         if cfg["root"].rstrip("/") in (str(Path.home() / "datasets"), str(ROOT / "datasets"), str(ROOT)):
             cfg["root"] = DEFAULTS["root"]
@@ -223,7 +224,8 @@ class App(tk.Tk):
         super().__init__()
         self.title("robot_remote — Quest teleop & data recording")
         self.configure(bg=C["bg"])
-        self.geometry("1380x820")
+        # tall enough for the real-arm option rows; never taller than the screen (the bottom row holds Start)
+        self.geometry(f"1380x{min(900, self.winfo_screenheight() - 80)}")
         self.cfg = load_cfg()
         self.events: queue.Queue = queue.Queue()
         self.procs: dict[str, Proc] = {}
@@ -270,12 +272,14 @@ class App(tk.Tk):
         ttk.Checkbutton(row, text="Enable motors at start (Reset + Enable)",
                         variable=self.v_real_enable).pack(side="left", padx=14)
         self.v_real_rviz = tk.BooleanVar(value=self.cfg["real_rviz"])
-        ttk.Checkbutton(row, text="RViz: live arms + Quest controllers", variable=self.v_real_rviz).pack(side="left", padx=14)
+        row = ttk.Frame(self.real_box)  # second row: RViz + the automatic moves at start / exit
+        row.pack(anchor="w")
+        ttk.Checkbutton(row, text="RViz: live arms + Quest controllers", variable=self.v_real_rviz).pack(side="left")
         self.v_real_park = tk.BooleanVar(value=self.cfg["real_park"])
         self.v_real_start_home = tk.BooleanVar(value=self.cfg["real_start_home"])
-        ttk.Checkbutton(row, text="Move to home (0, 0, 65, 0, 50, 0) deg after connecting",
+        ttk.Checkbutton(row, text="Home (0, 0, 65, 0, 50, 0) deg after connecting",
                         variable=self.v_real_start_home).pack(side="left", padx=14)
-        ttk.Checkbutton(row, text="Return to all joints 0 deg before exit (10 deg/s)",
+        ttk.Checkbutton(row, text="All joints 0 deg before exit",
                         variable=self.v_real_park).pack(side="left", padx=14)
         row = ttk.Frame(self.real_box)
         row.pack(anchor="w")
@@ -283,25 +287,24 @@ class App(tk.Tk):
         self.v_real_speed = tk.StringVar(value=self.cfg["real_speed"] if self.cfg["real_speed"] in REAL_SPEED else "precise")
         ttk.Combobox(row, textvariable=self.v_real_speed, values=list(REAL_SPEED), width=8,
                      state="readonly").pack(side="left", padx=(6, 4))
-        ttk.Label(row, text="(precise 15°/s: stops ~6° after release; normal 30°/s: ~20°)",
+        ttk.Label(row, text="(precise 15°/s: stops ~1 cm after release; normal 30°/s: faster, slides further)",
                   style="Dim.TLabel").pack(side="left", padx=(0, 14))
+        row = ttk.Frame(self.real_box)  # controller gains + command acceleration
+        row.pack(anchor="w")
         gains = json.loads((ROOT / "config/real_controller_gains.json").read_text())
         self.real_gains = {k: v for k, v in gains.items() if not k.startswith("_")}
         ttk.Label(row, text="Arm gains").pack(side="left")
         self.v_real_gains = tk.StringVar(value=self.cfg["real_gains"] if self.cfg["real_gains"] in self.real_gains else "standard")
         ttk.Combobox(row, textvariable=self.v_real_gains, values=list(self.real_gains), width=10,
                      state="readonly").pack(side="left", padx=(6, 4))
-        ttk.Label(row, text="(standard p1/ff0.4; responsive p2/ff0.8 on J2-J5: faster, ~0.2 deg overshoot on the right arm)",
+        ttk.Label(row, text="(responsive: p2/ff0.8 on J2-J5, tighter tracking)",
                   style="Dim.TLabel").pack(side="left", padx=(0, 14))
         ttk.Label(row, text="Joint acceleration [rad/s²]").pack(side="left")
         self.v_real_accel = tk.StringVar(value=str(self.cfg["real_accel"]) if str(self.cfg["real_accel"]) in ("0.45", "0.52")
                                          else "0.52")
         ttk.Combobox(row, textvariable=self.v_real_accel, values=["0.45", "0.52"], width=5,
                      state="readonly").pack(side="left", padx=6)
-        ttk.Label(row, text="real-arm test: higher values only added overshoot (8-10 deg) without a faster arm",
-                  style="Dim.TLabel").pack(side="left")
-        ttk.Label(self.real_box, text="Starts the igus ROS driver per arm, then the teleop on its topics. Limits: 30 deg/s "
-                                      "per joint, 0.25 m/s, 45 deg/s; command <= 10 deg ahead of the arm.",
+        ttk.Label(self.real_box, text="Starts the igus ROS driver per arm, then the teleop on its topics.",
                   style="Dim.TLabel").pack(anchor="w")
         self.v_target.trace_add("write", lambda *_: self._target_changed())
 
@@ -475,28 +478,28 @@ class App(tk.Tk):
     def _legend(self, parent):
         cv = tk.Canvas(parent, width=400, height=560, bg=C["panel"], highlightthickness=0)
 
-        def controller(cx, title, top, bottom, bottom_color="#d2a8ff"):
+        def controller(cx, title, top, bottom, bottom_color="#d2a8ff", top_color="#58a6ff"):
             cv.create_text(cx, 22, text=title, fill=C["fg"], font=("DejaVu Sans", 12, "bold"))
             cv.create_oval(cx - 70, 40, cx + 70, 150, outline="#8b949e", width=3)        # tracking ring
             cv.create_rectangle(cx - 28, 110, cx + 28, 270, outline="#8b949e", width=3)   # handle
             cv.create_oval(cx - 45, 70, cx + 45, 130, fill="#30363d", outline="#8b949e", width=2)  # face
-            cv.create_oval(cx - 30, 78, cx - 6, 102, fill="#58a6ff", outline="")          # face button 1
+            cv.create_oval(cx - 30, 78, cx - 6, 102, fill=top_color, outline="")          # face button 1
             cv.create_text(cx - 18, 90, text=top[0], fill="white", font=("Arial", 11, "bold"))
             cv.create_oval(cx + 6, 92, cx + 30, 116, fill=bottom_color, outline="")       # face button 2
             cv.create_text(cx + 18, 104, text=bottom[0], fill="white", font=("Arial", 11, "bold"))
             cv.create_rectangle(cx - 33, 150, cx - 22, 210, fill=C["ok"], outline="")       # grip
             cv.create_polygon(cx + 28, 120, cx + 44, 132, cx + 30, 160, fill=C["warn"], outline="")  # trigger
 
-        controller(105, "Left -> left arm", ("X",), ("Y",), RESET_COLOR)
+        controller(105, "Left -> left arm", ("X",), ("Y",), RESET_COLOR, FRAME_COLOR)
         controller(295, "Right -> right arm", ("A",), ("B",))
         items = [
             (C["ok"], "Grip (middle finger) - hold", "the arm follows your hand; release = freeze.\nRelease, reposition your hand, grip again - the arm does not jump"),
             (C["warn"], "Trigger (index finger)", "closes the gripper (deeper = tighter)"),
-            ("#58a6ff", "A / X", "start recording -> press again to save the episode"),
+            ("#58a6ff", "A (right)", "start recording -> press again to save the episode"),
+            (FRAME_COLOR, "X (left) - rotation frame", "switch TOOL <-> BASE (applies at the next grip)"),
             ("#d2a8ff", "B (right)", "discard the current episode and re-record"),
-            (RESET_COLOR, "Y (left) - reset scene", "sim: both arms go home, grippers open, box flaps close;\n"
-                                                   "real: both arms go home at 10 deg/s (any button / grip stops them).\n"
-                                                   "An open episode is discarded. Then A/X records the next one"),
+            (RESET_COLOR, "Y (left) - reset scene", "discards an open episode; arms go home (sim: box flaps close;\n"
+                                                   "real: 10 deg/s, any button / grip stops them)"),
             ("#8b949e", "Rotate the controller", "twist the handle = spin the tool; nod = tilt the tool"),
         ]
         y = 300
@@ -613,7 +616,7 @@ class App(tk.Tk):
         ttk.Label(left, text=f"Quest Browser: {QUEST_URL}    Server IP: {lan_ip()}", style="Dim.TLabel").pack(anchor="w", pady=4)
         btns = ttk.Frame(left)
         btns.pack(fill="x", pady=6)
-        self.b_toggle = ttk.Button(btns, text="● Start / Save  (= A/X)", command=lambda: self._rec_cmd(""))
+        self.b_toggle = ttk.Button(btns, text="● Start / Save  (= A)", command=lambda: self._rec_cmd(""))
         self.b_discard = ttk.Button(btns, text="✕ Discard  (= B)", command=lambda: self._rec_cmd("d"))
         if cfg["record"]:
             self.b_toggle.pack(side="left", padx=(0, 8))
@@ -723,7 +726,7 @@ class App(tk.Tk):
             return {}
 
     def _start_recorder(self, extra, starting="starting..."):
-        """run_record.sh with the dataset settings + extra args; True once it is ready for A/X."""
+        """run_record.sh with the dataset settings + extra args; True once it is ready for A."""
         cfg = self.cfg
         rec_cmd = [str(ROOT / "recording" / "run_record.sh"), "--name", cfg["name"], "--task", cfg["task"],
                    "--root", cfg["root"], "--fps", str(cfg["fps"]), *extra]
@@ -733,7 +736,7 @@ class App(tk.Tk):
             why = next((ln for ln in reversed(self.procs["record"].lines) if "ERROR" in ln or "Error:" in ln), "")
             self._set("record", C["err"], f"failed to start - {why[-120:] or 'see log'}: {self.procs['record'].log_path.name}")
             return False
-        self._set("record", C["ok"], "ready (press A/X to record)")
+        self._set("record", C["ok"], "ready (press A to record)")
         return True
 
     def _launch_sequence(self):
@@ -785,7 +788,7 @@ class App(tk.Tk):
                                                          "start pose", "dry run", "[reset]")):
             self._msg(f"[robot] {line.split(']: ')[-1]}")
         if name == "teleop" and "button -> toggle" in line and not self.cfg.get("record"):
-            self._msg("[record] A/X pressed, but recording is OFF this session - nothing is saved. Stop all, tick "
+            self._msg("[record] A pressed, but recording is OFF this session - nothing is saved. Stop all, tick "
                       "'Record a LeRobot dataset' (section 4) and Start again.")
             self.events.put(("rec", "not_recording", None))
         if name == "teleop" and (m := re.search(r"rotation frame: (tool|base)\b", line)):
@@ -858,9 +861,15 @@ class App(tk.Tk):
                 self.log.see("end")
             elif ev[0] == "rec":
                 self._rec_state(ev[1], ev[2])
-            elif ev[0] == "frame":
+            elif ev[0] == "frame":  # the teleop confirmed a frame (GUI button or the Quest X button)
                 self.cfg["rot_frame"] = ev[1]
                 self.b_frame.configure(text=FRAME_TEXT[ev[1]], state="normal")
+                try:  # remember it for the next start
+                    saved = json.loads(CONFIG.read_text()) if CONFIG.exists() else {}
+                    if saved.get("rot_frame") != ev[1]:
+                        CONFIG.write_text(json.dumps({**saved, "rot_frame": ev[1]}, ensure_ascii=False, indent=1))
+                except (OSError, ValueError):
+                    pass
         for key, p in list(self.procs.items()):
             if key in self.status and not p.alive() and self.stage != "stopping" and getattr(p, "_reported", False) is False:
                 p._reported = True
@@ -869,7 +878,7 @@ class App(tk.Tk):
 
     def _rec_state(self, state, data):
         if state == "recording":
-            self.rec_label.configure(text="● RECORDING   A/X = save,  B = discard,  Y = " +
+            self.rec_label.configure(text="● RECORDING   A = save,  B = discard,  Y = " +
                                      ("arms home (discards)" if self.cfg.get("target") == "real" else "reset scene (discards)"),
                                      bg=C["rec"])
             self._set("record", C["rec"], "recording")
@@ -883,12 +892,12 @@ class App(tk.Tk):
                 self.n_episodes = data
             n = getattr(self, "n_episodes", 0)
             self.rec_label.configure(text=("REAL ARMS   " if self.cfg.get("target") == "real" else "") +
-                                     f"READY   {n} episodes saved   press A/X to record the next one", bg=C["panel"])
+                                     f"READY   {n} episodes saved   press A to record the next one", bg=C["panel"])
             self._set("record", C["ok"], f"ready ({n} episodes saved)")
         elif state == "teleop":
             self.rec_label.configure(text="TELEOP (not recording)", bg=C["panel"])
         elif state == "not_recording":
-            self.rec_label.configure(text="RECORDING IS OFF - A/X saves nothing (tick Record before Start)", bg=C["warn"])
+            self.rec_label.configure(text="RECORDING IS OFF - A saves nothing (tick Record before Start)", bg=C["warn"])
         elif state == "real":
             self.rec_label.configure(text=f"REAL {' + '.join(self.cfg['arms']).upper()} ARMS" +
                                      ("  (dry run)" if self.cfg["real_dry_run"] else "  - hold GRIP to move"), bg=C["warn"])

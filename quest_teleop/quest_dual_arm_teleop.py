@@ -1284,14 +1284,18 @@ def run_session(node, chain, args):
                                sent=side in cand and not args.dry_run)
             node.publish_action()
             node.publish_viz(readings, hand_of)
-            # controller buttons (rising edges): A/X = start/save (toggle), B = discard, Y (left) = reset the scene
+            # controller buttons (rising edges): A (right) = start/save (toggle), B (right) = discard,
+            # X (left) = switch the rotation frame tool <-> base (applies at the next grip), Y (left) = reset the scene
             for h, (prim, sec) in xr.buttons.items():
                 was_p, was_s = last_buttons.get(h, (False, False))
-                for pressed, was, ev in ((prim, was_p, "toggle"), (sec, was_s, "reset" if h == "left" else "discard")):
+                for pressed, was, ev in ((prim, was_p, "frame" if h == "left" else "toggle"),
+                                         (sec, was_s, "reset" if h == "left" else "discard")):
                     if pressed and not was:
                         log.info(f"[{h} hand] button -> {ev}")
                         if ev == "reset":
                             node.reset_requested = True
+                        elif ev == "frame":
+                            node.set_rot_frame("base" if node.rot_frame == "tool" else "tool")
                         else:
                             node.event_pub.publish(String(data=ev))
                 last_buttons[h] = (prim, sec)

@@ -211,7 +211,7 @@ class QuestController:
     def read_all(self) -> dict:
         """Step the session once -> {hand: (tracked, pos[3] operator frame, quat xyzw, squeeze, trigger)}"""
         out = self._session.step(execution_events=self._events, external_inputs=self._inputs)
-        self.buttons = {h: self._buttons(out[h]) for h in self.hands}  # (primary A/X, secondary B/Y; dual-arm teleop: Y = scene reset)
+        self.buttons = {h: self._buttons(out[h]) for h in self.hands}  # (primary A/X, secondary B/Y; dual-arm teleop: A = record, X = rotation frame, Y = scene reset)
         return {h: self._parse(out[h]) for h in self.hands}
 
     def _buttons(self, c):
