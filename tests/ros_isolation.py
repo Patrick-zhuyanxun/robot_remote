@@ -7,8 +7,11 @@ subprocesses started through ros_env.sh (ROBOT_REMOTE_DOMAIN_ID) inherit it.
 """
 import os
 
-TEST_DOMAIN = "97"
-ROBOT_DOMAINS = {"42", "91", "11", "0"}  # robot_remote, rviz_pretest, legacy real arm, ROS default
+ROBOT_DOMAINS = {"42", "91", "11", "12", "0"}  # robot_remote, rviz_pretest, legacy / LAN real arm, ROS default
+# ROBOT_REMOTE_TEST_DOMAIN: lets two test runs on this PC use different private domains (never a robot domain)
+TEST_DOMAIN = os.environ.get("ROBOT_REMOTE_TEST_DOMAIN", "97")
+if TEST_DOMAIN in ROBOT_DOMAINS or not TEST_DOMAIN.isdigit() or not 1 <= int(TEST_DOMAIN) <= 232:
+    raise RuntimeError(f"ROBOT_REMOTE_TEST_DOMAIN={TEST_DOMAIN!r} is a robot domain or invalid (1-232)")
 
 os.environ["ROS_DOMAIN_ID"] = TEST_DOMAIN
 os.environ["ROBOT_REMOTE_DOMAIN_ID"] = TEST_DOMAIN

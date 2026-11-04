@@ -65,10 +65,12 @@ DEFAULTS = {
     "real_park": True, "real_enable": True, "real_rviz": True, "real_start_home": True,
     "real_accel": "0.52",
     "real_speed": "precise",  # teleop speed preset of the real arms, see REAL_SPEED
-    "real_gains": "standard",  # arm controller gains, config/real_controller_gains.json  # --max-joint-acc [rad/s^2] of the real-arm command (identified arm limit ~0.52)
+    "real_gains": "tuned",  # arm controller gains, config/real_controller_gains.json  # --max-joint-acc [rad/s^2] of the real-arm command (identified arm limit ~0.52)
     "sim_rviz": True,  # sim: RViz with Isaac arms vs teleop commands + Quest controllers + lag panel
     "rot_frame": "tool",  # Quest hand rotation applied about the tool's own axes, or about the fixed base axes
+    "rot_input": "hand+stick",  # what rotates the tool while gripping: hand + thumbstick, thumbstick only, hand only
 }
+ROT_INPUT_TEXT = {"hand+stick": "hand + stick", "stick": "stick only", "hand": "hand only"}
 RESET_COLOR = "#ff7b72"  # Y button (scene reset) in the controller legend
 FRAME_COLOR = "#3fb9a8"  # X button (rotation frame tool <-> base) in the controller legend
 FRAME_TEXT = {"tool": "Rotation: TOOL frame  (click: base)", "base": "Rotation: BASE frame  (click: tool)"}
@@ -123,6 +125,12 @@ def load_cfg():
             CONFIG.parent.mkdir(parents=True, exist_ok=True)
             CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2) + "\n")
         cfg["record"] = True  # Record starts ticked every time (a session without it saved nothing on A, 2026-10-21)
+        # 2026-11-03 driver update: the old default "standard" (p1/ff0.4, jog scale 2.0) becomes "tuned" once
+        # (p3/ff0.6, scale 1.65); choosing standard again afterwards is kept.
+        if not cfg.get("gains_v2"):
+            if cfg.get("real_gains") == "standard":
+                cfg["real_gains"] = "tuned"
+            cfg["gains_v2"] = True
         # former defaults (~/datasets, robot_remote/datasets) and the project folder itself -> robot_remote/dataset
         if cfg["root"].rstrip("/") in (str(Path.home() / "datasets"), str(ROOT / "datasets"), str(ROOT)):
             cfg["root"] = DEFAULTS["root"]
@@ -161,6 +169,35 @@ def cpu_sets():
 CPU_SETS = cpu_sets()
 CPU_ROLE = {"sim": "sim", "replay_sim": "sim", "teleop": "teleop"}  # everything else: aux
 
+
+
+_APPEND_CHECK = []
+
+
+def recorder_cannot_append():
+    """None if the recorder run_record.sh would start can append to an existing dataset, else the reason. Without
+    Isaac Sim 6.1 it runs on system python3 + /opt/ros (see run_record.sh), often with LeRobot 0.4.x, which has no
+    LeRobotDataset.resume. Checked once per GUI session (installed version only, no lerobot import)."""
+    if not _APPEND_CHECK:
+        isaac = Path(os.environ.get("ISAAC_SIM", str(Path.home() / "isaac-sim-6.1")))
+        reason = None
+        if (not (isaac / "exts/isaacsim.ros2.core/humble/rclpy").is_dir()
+                or os.environ.get("ROBOT_REMOTE_RECORD_PY") == "system"):
+            py = os.environ.get("LEROBOT_PY") or "python3"
+            try:
+                ver = subprocess.run([py, "-c", "from importlib.metadata import version; print(version('lerobot'))"],
+                                     capture_output=True, text=True, timeout=20).stdout.strip()
+            except (OSError, subprocess.SubprocessError):
+                ver = ""
+            try:
+                major_minor = tuple(int(x) for x in ver.split(".")[:2])
+            except ValueError:
+                major_minor = ()
+            if major_minor < (0, 5):
+                reason = (f"this PC's recorder ({py}, LeRobot {ver or 'not found'}) cannot append to an existing "
+                          f"dataset - choose a new name")
+        _APPEND_CHECK.append(reason)
+    return _APPEND_CHECK[0]
 
 class Proc:
     """A launched script: log file + optional line callback + stdin for the recorder. Pinned to its CPU set
@@ -294,10 +331,10 @@ class App(tk.Tk):
         gains = json.loads((ROOT / "config/real_controller_gains.json").read_text())
         self.real_gains = {k: v for k, v in gains.items() if not k.startswith("_")}
         ttk.Label(row, text="Arm gains").pack(side="left")
-        self.v_real_gains = tk.StringVar(value=self.cfg["real_gains"] if self.cfg["real_gains"] in self.real_gains else "standard")
+        self.v_real_gains = tk.StringVar(value=self.cfg["real_gains"] if self.cfg["real_gains"] in self.real_gains else "tuned")
         ttk.Combobox(row, textvariable=self.v_real_gains, values=list(self.real_gains), width=10,
                      state="readonly").pack(side="left", padx=(6, 4))
-        ttk.Label(row, text="(responsive: p2/ff0.8 on J2-J5, tighter tracking)",
+        ttk.Label(row, text="(tuned: igus driver p3/ff0.6 + jog scale 1.65; standard/responsive: old scale 2.0)",
                   style="Dim.TLabel").pack(side="left", padx=(0, 14))
         ttk.Label(row, text="Joint acceleration [rad/s²]").pack(side="left")
         self.v_real_accel = tk.StringVar(value=str(self.cfg["real_accel"]) if str(self.cfg["real_accel"]) in ("0.45", "0.52")
@@ -390,6 +427,14 @@ class App(tk.Tk):
         self.v_yaw = tk.StringVar(value=str(self.cfg["yaw_deg"]))
         ttk.Radiobutton(row, text="Facing the same way as the arms (recommended)", value="0", variable=self.v_yaw).pack(side="left", padx=8)
         ttk.Radiobutton(row, text="Facing the robot", value="180", variable=self.v_yaw).pack(side="left")
+        row = ttk.Frame(g)
+        row.pack(anchor="w", padx=8, pady=(0, 6))
+        ttk.Label(row, text="Rotation input").pack(side="left")
+        self.v_rot_input = tk.StringVar(value=ROT_INPUT_TEXT.get(self.cfg["rot_input"], ROT_INPUT_TEXT["hand+stick"]))
+        ttk.Combobox(row, textvariable=self.v_rot_input, values=list(ROT_INPUT_TEXT.values()), width=12,
+                     state="readonly").pack(side="left", padx=8)
+        ttk.Label(row, text="what turns the tool while gripping (thumbstick: see the legend)",
+                  style="Dim.TLabel").pack(side="left")
 
         bar = ttk.Frame(left)
         bar.pack(fill="x", pady=10)
@@ -398,7 +443,8 @@ class App(tk.Tk):
         ttk.Button(bar, text="⏵ Play back a dataset...", command=self.open_replay).pack(side="left")
 
         ttk.Label(right, text="Quest controller", style="Big.TLabel").pack(anchor="w")
-        self._legend(right).pack(pady=6)
+        self.legend = self._legend(right)
+        self.legend.pack(pady=6)
         self.after(0, self._target_changed)
         return f
 
@@ -462,6 +508,10 @@ class App(tk.Tk):
         """(ok, text) for the dataset at save location / name with the current settings."""
         st = dataset_check.inspect(Path(self.v_root.get()).expanduser() / self.v_name.get())
         problems = dataset_check.compatible(st["info"], *self._session_shape()) if st["state"] == "dataset" else []
+        if st["state"] == "dataset" and not problems:
+            why = recorder_cannot_append()
+            if why:
+                problems = [why]
         return dataset_check.describe(st, problems)
 
     def _update_path_hint(self):
@@ -498,9 +548,10 @@ class App(tk.Tk):
             ("#58a6ff", "A (right)", "start recording -> press again to save the episode"),
             (FRAME_COLOR, "X (left) - rotation frame", "switch TOOL <-> BASE (applies at the next grip)"),
             ("#d2a8ff", "B (right)", "discard the current episode and re-record"),
-            (RESET_COLOR, "Y (left) - reset scene", "discards an open episode; arms go home (sim: box flaps close;\n"
-                                                   "real: 10 deg/s, any button / grip stops them)"),
+            (RESET_COLOR, "Y (left) - reset scene", "discards an open episode; arms go home (sim: flaps close;\n"
+                                                   "real: HOLD 1 s, then 10 deg/s, any button / grip stops)"),
             ("#8b949e", "Rotate the controller", "twist the handle = spin the tool; nod = tilt the tool"),
+            ("#8b949e", "Thumbstick while gripping", "left/right spin the tool, up/down tilt it"),
         ]
         y = 300
         for color, key, desc in items:
@@ -531,6 +582,7 @@ class App(tk.Tk):
                "real_accel": self.v_real_accel.get(), "real_speed": self.v_real_speed.get(),
                "real_gains": self.v_real_gains.get(),
                "sim_rviz": self.v_sim_rviz.get(),
+               "rot_input": {v: k for k, v in ROT_INPUT_TEXT.items()}.get(self.v_rot_input.get(), "hand+stick"),
                "rot_frame": self.cfg.get("rot_frame", "tool")}  # set on the run page (button), kept for next time
         if real:
             try:
@@ -566,8 +618,8 @@ class App(tk.Tk):
                 + ("- Motors that report 'not enabled' are ENABLED now (Reset + Enable); the arms then hold.\n"
                    if cfg["real_enable"] else "- Motors are already enabled (iRC / robot controls).\n")
                 + "- The path between straight up and home is clear. Real grippers are not controlled.\n"
-                + "- Y (left controller) / Arms home: both arms move ON THEIR OWN back to home at 10 deg/s;\n"
-                  "  any button or grip stops them.\n"
+                + "- Y (left controller, HOLD 1 s) / Arms home button: both arms move ON THEIR OWN back to home\n"
+                  "  at 10 deg/s; any button or grip stops them.\n"
                 + ("- After connecting the arms move ON THEIR OWN to home (0, 0, 65, 0, 50, 0) deg, 10 deg/s.\n"
                    if cfg["real_start_home"] else "- The arms start where they are (all 0 = straight up is hard to control).\n")
                 + ("- On Stop all the arms move ON THEIR OWN back to all joints 0 deg, 10 deg/s.\n"
@@ -636,7 +688,8 @@ class App(tk.Tk):
                            font=("DejaVu Sans Mono", 9))
         self.log.pack(fill="both", expand=True, padx=4, pady=4)
         ttk.Label(right, text="Quest controller", style="Big.TLabel").pack(anchor="w")
-        self._legend(right).pack(pady=6)
+        self.legend = self._legend(right)
+        self.legend.pack(pady=6)
         return f
 
     # ------------------------------------------------------------------ process orchestration
@@ -665,7 +718,7 @@ class App(tk.Tk):
         enable = cfg["real_enable"] and not cfg["real_dry_run"] and not mock
         launch = (f"source /opt/ros/humble/setup.bash && source '{ROOT}/igus_ws/install/setup.bash' && "
                   f"exec ros2 launch '{ROOT}/real_robot/dual_arm_driver.launch.py' arms:={','.join(cfg['arms'])} "
-                  f"gains:={cfg.get('real_gains', 'standard')} "
+                  f"gains:={cfg.get('real_gains', 'tuned')} "
                   f"enable_motors:={'true' if enable else 'false'} left_ip:={cfg['left_ip']} right_ip:={cfg['right_ip']}"
                   + (" hardware_protocol:=mock_hardware" if mock else ""))
         self._set("sim", C["warn"], "starting the igus ROS driver(s)...")
@@ -683,7 +736,7 @@ class App(tk.Tk):
         self._set("sim", C["ok"], "driver up" + (", motors enabled" if enable else ""))
         # 2) the Quest teleop, streaming to the drivers' trajectory controllers (--backend real-ros)
         cmd = [str(ROOT / "quest_teleop" / "run_quest_real_arm.sh"), "--arms", *cfg["arms"],
-               "--yaw-deg", str(cfg["yaw_deg"]), "--rot-frame", cfg["rot_frame"], "--quiet",
+               "--yaw-deg", str(cfg["yaw_deg"]), "--rot-frame", cfg["rot_frame"], "--rot-input", cfg.get("rot_input", "hand+stick"), "--quiet",
                "--max-joint-acc", str(cfg.get("real_accel", "0.52")), *REAL_SPEED.get(cfg.get("real_speed"), [])]
         if cfg["yaw_deg"] == 180:
             cmd.append("--swap-hands")
@@ -757,7 +810,7 @@ class App(tk.Tk):
         self._set("sim", C["ok"], "running")
 
         tele_cmd = [str(ROOT / "quest_teleop" / "run_quest_dual_arm.sh"), "--arms", *cfg["arms"],
-                    "--yaw-deg", str(cfg["yaw_deg"]), "--rot-frame", cfg["rot_frame"], "--quiet"]
+                    "--yaw-deg", str(cfg["yaw_deg"]), "--rot-frame", cfg["rot_frame"], "--rot-input", cfg.get("rot_input", "hand+stick"), "--quiet"]
         if cfg["yaw_deg"] == 180:
             tele_cmd.append("--swap-hands")
         self._set("teleop", C["warn"], "starting (arms go home, CloudXR ~10 s)...")
@@ -879,7 +932,7 @@ class App(tk.Tk):
     def _rec_state(self, state, data):
         if state == "recording":
             self.rec_label.configure(text="● RECORDING   A = save,  B = discard,  Y = " +
-                                     ("arms home (discards)" if self.cfg.get("target") == "real" else "reset scene (discards)"),
+                                     ("hold 1 s: arms home (discards)" if self.cfg.get("target") == "real" else "reset scene (discards)"),
                                      bg=C["rec"])
             self._set("record", C["rec"], "recording")
         elif state == "frames":

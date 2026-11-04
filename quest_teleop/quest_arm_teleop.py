@@ -197,6 +197,7 @@ class QuestController:
         self._launcher = CloudXRLauncher(install_dir=str(Path.home() / ".cloudxr"), env_config=str(env_file))
         self.hands = [hands] if isinstance(hands, str) else list(hands)
         self.buttons = {h: (False, False) for h in self.hands}
+        self.sticks = {h: (0.0, 0.0) for h in self.hands}
         controllers = ControllersSource(name="controllers")
         xform = ValueInput("operator_T_anchor", TransformMatrix())
         transformed = controllers.transformed(xform.output("value"))
@@ -212,6 +213,7 @@ class QuestController:
         """Step the session once -> {hand: (tracked, pos[3] operator frame, quat xyzw, squeeze, trigger)}"""
         out = self._session.step(execution_events=self._events, external_inputs=self._inputs)
         self.buttons = {h: self._buttons(out[h]) for h in self.hands}  # (primary A/X, secondary B/Y; dual-arm teleop: A = record, X = rotation frame, Y = scene reset)
+        self.sticks = {h: self._stick(out[h]) for h in self.hands}     # thumbstick (x right, y up/forward), each in [-1, 1]
         return {h: self._parse(out[h]) for h in self.hands}
 
     def _buttons(self, c):
@@ -221,6 +223,18 @@ class QuestController:
             return float(c[self._idx.PRIMARY_CLICK]) > 0.5, float(c[self._idx.SECONDARY_CLICK]) > 0.5
         except (IndexError, KeyError, TypeError, ValueError):
             return False, False
+
+    def _stick(self, c):
+        """(x, y) of the thumbstick in [-1, 1]; (0, 0) when the controller is untracked, the field is missing or not finite."""
+        if getattr(c, "is_none", False):
+            return 0.0, 0.0
+        try:
+            x, y = float(c[self._idx.THUMBSTICK_X]), float(c[self._idx.THUMBSTICK_Y])
+        except (IndexError, KeyError, TypeError, ValueError, AttributeError):
+            return 0.0, 0.0
+        if not (np.isfinite(x) and np.isfinite(y)):
+            return 0.0, 0.0
+        return float(np.clip(x, -1.0, 1.0)), float(np.clip(y, -1.0, 1.0))
 
     def read(self):
         """Single-hand convenience: the first hand's tuple."""

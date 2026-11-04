@@ -6,5 +6,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 if [ -z "${LEROBOT_PY:-}" ]; then
   LEROBOT_PY="$HERE/../.venv_record/bin/python"
   [ -x "$LEROBOT_PY" ] || LEROBOT_PY="$HOME/Robotic_infra/lerobot/.venv/bin/python"
+  [ -x "$LEROBOT_PY" ] || LEROBOT_PY=python3   # PC without the recorder venv (needs cv2 + numpy)
 fi
 exec "$LEROBOT_PY" "$HERE/real_cameras.py" "$@"

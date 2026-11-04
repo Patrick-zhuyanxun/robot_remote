@@ -520,6 +520,7 @@ class NodeIntegrationTests(unittest.TestCase):
         node = fake = None
         try:
             args, _ = teleop.parse_args(["--quiet", "--no-home", "--arms", "left"])
+            self.assertEqual(args.y_hold_s, 0.0)  # the simulator: Y acts on the rising edge, exactly as before
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])
             node = teleop.DualArmTeleop(args, chain)

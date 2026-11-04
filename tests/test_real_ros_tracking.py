@@ -1,12 +1,14 @@
 """Real arm through the igus ROS driver (--backend real-ros) against a fake driver that behaves like the ReBeL:
-joint_trajectory_controller with a velocity command interface (p 1.0, ff_velocity_scale 0.4; each single-point message
-restarts from the measured state, position-only points -> linear interpolation) driving the plant identified in
-Igus_rebel's controller.yaml (gain 1.26, delay 0.078 s, velocity lag 0.16 s, acceleration limit 0.52 rad/s^2).
+joint_trajectory_controller with a velocity command interface (each single-point message restarts from the measured
+state, position-only points -> linear interpolation) driving a plant with a 0.078 s delay and a 0.16 s velocity lag.
+PLANTS: "tuned" (default; Igus_rebel 287b0186: p 3 / ff 0.6, jog scale 1.65 -> gain 0.99, accel 0.55 / brake 1.5
+rad/s^2, measured on both real arms 2026-10-31) and "old" (p 1 / ff 0.4, gain 1.26, 0.52 rad/s^2); ROBOT_REMOTE_FAKE_PLANT.
 
   - leash: a fast back-and-forth hand motion used to leave the arm >15 deg behind its command (-> "let go");
     with --max-cmd-lead-deg 6 the command stays within 6 deg of the measured joints and the arm stays gripped
   - stall: an arm that does not move at all (motors off) is still let go
-  - Y on the real robot: open episode discarded, both arms back to HOME_DEG; a button during the move stops it
+  - Y on the real robot (held --y-hold-s 1.0): open episode discarded, both arms back to HOME_DEG; a button during
+    the move stops it; a short press, or a grip / button during the hold, does nothing
 """
 import sys as _sys, pathlib as _pl
 _sys.path.insert(0, str(_pl.Path(__file__).resolve().parent))
@@ -32,10 +34,23 @@ except ImportError:  # pragma: no cover
     teleop = None
 
 
+# Fake arm + driver: JTC gains, plant gain (= driver jog_velocity_scale / 1.667, the measured 0.600 deg/s per jog %),
+# and the robot's own acceleration / braking limit [rad/s^2].
+PLANTS = {
+    # Igus_rebel 287b0186 (2026-10-31, both real arms): p 3 / ff 0.6, jog scale 1.65 -> gain 0.99; the robot speeds up at
+    # ~0.55 rad/s^2 and brakes on a lower command at ~1.45-1.75 (jog_speed_check). config/real_controller_gains.json "tuned".
+    "tuned": dict(p=3.0, ff=0.6, gain=0.99, acc=0.55, dec=1.5),
+    # the old driver (scale 2.0 hard-coded) + p 1 / ff 0.4, fit of a 2026-09 real move (gain 1.26, one 0.52 limit)
+    "old": dict(p=1.0, ff=0.4, gain=1.26, acc=0.52, dec=0.52),
+}
+PLANT = os.environ.get("ROBOT_REMOTE_FAKE_PLANT", "tuned")
+
+
 class FakeRebelDriver:
     """/<side>/rebel_arm_trajectory_controller/joint_trajectory -> JTC + plant at 100 Hz -> /<side>/joint_states."""
 
-    def __init__(self, sides, q0_deg, frozen=False):
+    def __init__(self, sides, q0_deg, frozen=False, plant=None):
+        self.k = PLANTS[plant or PLANT]
         self.node = rclpy.create_node("fake_rebel_driver")
         self.dt, self.delay_n = 0.01, 8
         self.q = {s: np.deg2rad(np.array(q0_deg, float)) for s in sides}
@@ -77,12 +92,14 @@ class FakeRebelDriver:
                         k = min((t - t0) / la, 1.0)
                         ref = a + (b - a) * k
                         vref = (b - a) / la if k < 1.0 else np.zeros(6)
-                        u = 0.4 * vref + 1.0 * (ref - self.q[s])
+                        u = self.k["ff"] * vref + self.k["p"] * (ref - self.q[s])
                     self.ubuf[s].append(u)
                     ud = self.ubuf[s].pop(0)
                     if not self.frozen:
-                        dv = np.clip((1.26 * ud - self.v[s]) / 0.16 * self.dt, -0.52 * self.dt, 0.52 * self.dt)
-                        self.v[s] = self.v[s] + dv
+                        dv = (self.k["gain"] * ud - self.v[s]) / 0.16 * self.dt
+                        braking = dv * self.v[s] < 0  # lowering |v|: the robot's (harder) braking limit
+                        lim = np.where(braking, self.k["dec"], self.k["acc"]) * self.dt
+                        self.v[s] = self.v[s] + np.clip(dv, -lim, lim)
                         self.q[s] = self.q[s] + self.v[s] * self.dt
                     msg = JointState(name=list(teleop.ARM_JOINTS), position=[float(x) for x in self.q[s]])
                     msg.header.stamp = self.node.get_clock().now().to_msg()
@@ -125,7 +142,8 @@ def wave(t):  # open hand first (the real arm needs a release before the first g
 
 @unittest.skipIf(teleop is None, "source ROS and use .venv_quest/bin/python for node integration")
 class RealRosTrackingTests(unittest.TestCase):
-    def session(self, extra, script, duration, q0=teleop.HOME_DEG if teleop else None, frozen=False, probe=None):
+    def session(self, extra, script, duration, q0=teleop.HOME_DEG if teleop else None, frozen=False, probe=None,
+                plant=None):
         rclpy.init()
         node = drv = None
         events = []
@@ -134,12 +152,13 @@ class RealRosTrackingTests(unittest.TestCase):
                                          "--no-park", *extra])
             chain = teleop.SerialChain(teleop.make_urdf(), "base_link", "link6", teleop.ARM_JOINTS,
                                        tcp_xyz=teleop.TCP_PRESETS["flange"])
-            drv = FakeRebelDriver(["left"], q0, frozen=frozen)
+            drv = FakeRebelDriver(["left"], q0, frozen=frozen, plant=plant)
             drv.node.create_subscription(String, "/quest_teleop/events", lambda m: events.append(m.data), 10)
             node = teleop.DualArmTeleop(args, chain)
             arm = node.arms["left"]
-            stats = {"gap": 0.0, "engaged_ticks": 0, "let_go": 0}
             orig_warning = node.get_logger().warning
+            orig_note = node.trace.note   # every info / warning / error of the teleop passes through TracingLog -> trace.note
+            stats = {"gap": 0.0, "engaged_ticks": 0, "let_go": 0, "infos": []}
             quest = TimedQuest(script, duration)
             read = quest.read_all
 
@@ -155,7 +174,9 @@ class RealRosTrackingTests(unittest.TestCase):
             with patch.object(teleop, "QuestController", return_value=quest), \
                     patch.object(type(node.get_logger()), "warning", autospec=True,
                                  side_effect=lambda self_, msg, **kw: (stats.__setitem__("let_go", stats["let_go"] + ("let go" in msg)),
-                                                                       orig_warning(msg, **kw))):
+                                                                       orig_warning(msg, **kw))), \
+                    patch.object(node.trace, "note",
+                                 side_effect=lambda msg: (stats["infos"].append(msg), orig_note(msg))):
                 teleop.run_session(node, chain, args)
             stats["q_end"] = np.rad2deg(arm.q_meas)
             stats["engaged_end"] = arm.engaged
@@ -183,20 +204,71 @@ class RealRosTrackingTests(unittest.TestCase):
         stats, _ = self.session([], wave, 4.0, frozen=True)
         self.assertGreater(stats["let_go"], 0)
 
-    def test_y_moves_the_real_arms_home_and_a_button_stops_it(self):
+    def test_y_held_moves_the_real_arms_home_and_a_button_stops_it(self):
         start = [20, 10, 50, 0, 30, 0]
 
-        def press_y(t):
-            return [0, 0, 0], 0.0, False, 0.3 < t < 0.5
-        stats, events = self.session([], press_y, 9.0, q0=start)
-        self.assertIn("reset", events)
+        def hold_y(t):  # held 1.5 s (--y-hold-s 1.0 on the real backends): the arms go home, Y released during the move
+            return [0, 0, 0], 0.0, False, 0.3 < t < 1.8
+        stats, events = self.session([], hold_y, 10.0, q0=start)
+        self.assertEqual(events, ["reset"])
         np.testing.assert_allclose(stats["q_end"], teleop.HOME_DEG, atol=1.0)
+        self.assertTrue(any("Y held - keep holding 1.0 s" in m for m in stats["infos"]), stats["infos"])
 
-        def press_y_then_a(t):  # A 1 s into the move: stop there, and A must not also start a recording
-            return [0, 0, 0], 0.0, 1.5 < t < 1.7, 0.3 < t < 0.5
-        stats, events = self.session([], press_y_then_a, 4.0, q0=start)
+        def hold_y_then_a(t):  # A 1.5 s into the move (the hold ends at ~1.3 s): stop there, A must not start a recording
+            return [0, 0, 0], 0.0, 2.8 < t < 3.0, 0.3 < t < 1.8
+        stats, events = self.session([], hold_y_then_a, 5.0, q0=start)
         self.assertEqual(events, ["reset"])
         self.assertGreater(np.max(np.abs(stats["q_end"] - np.array(teleop.HOME_DEG))), 5.0)
+
+    def test_short_y_press_on_the_real_robot_does_nothing(self):
+        """A thumb brushing Y (real logs 2026-11-03: 18 presses in a day): no reset event, the arms do not move."""
+        start = [20, 10, 50, 0, 30, 0]
+        for t_release in (0.6, 0.9):  # held 0.3 s and 0.6 s, hold time 1.0 s
+            def press_y(t, t_release=t_release):
+                return [0, 0, 0], 0.0, False, 0.3 < t < t_release
+            stats, events = self.session([], press_y, 3.0, q0=start)
+            self.assertEqual(events, [])
+            np.testing.assert_allclose(stats["q_end"], start, atol=0.1)
+            self.assertTrue(any("Y released after" in m and "hold 1.0 s to discard the episode and send the arms home" in m
+                                for m in stats["infos"]), stats["infos"])
+
+    def test_grip_or_button_during_the_y_hold_cancels_it(self):
+        start = [20, 10, 50, 0, 30, 0]
+
+        def grip_during(t):  # Y held 0.3-2.5 s; the grip is squeezed at 0.8-0.9 s -> cancelled, and Y still held does not restart
+            return [0, 0, 0], (1.0 if 0.8 < t < 0.9 else 0.0), False, 0.3 < t < 2.5
+        stats, events = self.session([], grip_during, 3.5, q0=start)
+        self.assertEqual(events, [])
+        np.testing.assert_allclose(stats["q_end"], start, atol=0.1)
+        self.assertTrue(any("Y hold cancelled" in m for m in stats["infos"]), stats["infos"])
+
+        def x_during(t):  # X (rotation frame) pressed at 0.8 s: cancels the reset (and still switches the frame)
+            return [0, 0, 0], 0.0, 0.8 < t < 0.9, 0.3 < t < 2.5
+        stats, events = self.session([], x_during, 3.5, q0=start)
+        self.assertEqual(events, [])
+        np.testing.assert_allclose(stats["q_end"], start, atol=0.1)
+
+    def test_y_still_held_after_the_reset_does_not_start_another_one(self):
+        near_home = [4, 0, 62, 0, 47, 0]
+
+        def script(t):  # held from 0.3 s to 6 s (the reset runs at ~1.3 s); released 6-7 s; held again 7-8.5 s
+            return [0, 0, 0], 0.0, False, 0.3 < t < 6.0 or 7.0 < t < 8.5
+        stats, events = self.session([], script, 10.0, q0=near_home)
+        self.assertEqual(events, ["reset", "reset"])  # one per hold, none for the Y that stayed down
+        np.testing.assert_allclose(stats["q_end"], teleop.HOME_DEG, atol=1.0)
+
+    def test_y_hold_zero_is_immediate_and_the_option_is_validated(self):
+        start = [20, 10, 50, 0, 30, 0]
+
+        def tap(t):
+            return [0, 0, 0], 0.0, False, 0.3 < t < 0.4
+        stats, events = self.session(["--y-hold-s", "0"], tap, 1.5, q0=start)
+        self.assertEqual(events, ["reset"])
+        for backend in ("real-ros", "real"):
+            self.assertEqual(teleop.parse_args(["--backend", backend, "--arms", "left"])[0].y_hold_s, 1.0)
+        self.assertEqual(teleop.parse_args(["--arms", "left"])[0].y_hold_s, 0.0)  # simulator
+        with self.assertRaises(SystemExit), patch("sys.stderr"):
+            teleop.parse_args(["--backend", "real-ros", "--y-hold-s", "-1"])
 
     def test_stop_all_during_the_y_move_stops_the_arms(self):
         """Ctrl+C / GUI Stop all (SIGINT / SIGTERM only set the main loop's stop flag) must also end the home move."""
@@ -206,10 +278,10 @@ class RealRosTrackingTests(unittest.TestCase):
         sent = []
 
         def press_y(t):
-            return [0, 0, 0], 0.0, False, 0.3 < t < 0.5
+            return [0, 0, 0], 0.0, False, 0.3 < t < 1.8
 
         def probe(t, node):  # called on every Quest read, also from the reset move's abort check
-            if t > 1.5 and not sent:
+            if t > 2.5 and not sent:
                 sent.append(1)
                 os.kill(os.getpid(), signal.SIGINT)
         t0 = time.monotonic()
@@ -222,12 +294,12 @@ class RealRosTrackingTests(unittest.TestCase):
         start = [20, 10, 50, 0, 30, 0]
 
         def press_y(t):
-            return [0, 0, 0], 0.0, False, 0.3 < t < 0.5
-        stats, events = self.session(["--dry-run"], press_y, 2.0, q0=start)
+            return [0, 0, 0], 0.0, False, 0.3 < t < 1.8
+        stats, events = self.session(["--dry-run"], press_y, 3.0, q0=start)
         self.assertIn("reset", events)
         np.testing.assert_allclose(stats["q_end"], start, atol=0.1)
 
-    def overshoot(self, extra):
+    def overshoot(self, extra, plant=None):
         """Hand sweeps 0.3 m sideways in 1 s and stops: how far does the arm run past where it finally settles?"""
         hist = []
 
@@ -242,7 +314,7 @@ class RealRosTrackingTests(unittest.TestCase):
             if node.arms["left"].q_meas is not None:
                 hist.append(node.arms["left"].q_meas.copy())
                 times.append(t)
-        stats, _ = self.session(extra, sweep, 7.0, probe=probe)
+        stats, _ = self.session(extra, sweep, 7.0, probe=probe, plant=plant)
         q = np.rad2deg(np.array(hist))
         start, end = q[0], q[-1]
         d = np.sign(end - start)
@@ -253,12 +325,24 @@ class RealRosTrackingTests(unittest.TestCase):
         return float(np.max(over)), float(np.max(np.abs(end - start))), stats
 
     def test_acceleration_limit_stops_the_arm_without_overshoot(self):
-        over_on, moved, stats = self.overshoot([])
+        # the limit's effect shows on the OLD controller (p1/ff0.4, scale 2.0): 0.8-5.6 deg with it, ~12 without
+        over_on, moved, stats = self.overshoot([], plant="old")
         self.assertGreater(moved, 20.0)
         self.assertEqual(stats["let_go"], 0)
-        over_off, _, _ = self.overshoot(["--max-joint-acc", "0"])  # same speed, no acceleration limit
-        self.assertLess(over_on, 7.0)  # default 0.52 rad/s^2: 3.5-5.6 deg on the fake arm (timing noise), 11.7 without
+        over_off, _, _ = self.overshoot(["--max-joint-acc", "0"], plant="old")  # same speed, no acceleration limit
+        self.assertLess(over_on, 7.0)
         self.assertGreater(over_off, over_on + 5.0)
+
+    def test_tuned_controller_sweep_and_release(self):
+        """Igus_rebel 287b0186 controller (p3/ff0.6, scale 1.65, braking 1.5 rad/s^2) with the teleop defaults:
+        fake arm 2026-11-03: sweep overshoot 0.9 deg, release come-back 1.1 deg, glide 13.7 deg, no let go."""
+        over, moved, stats = self.overshoot([], plant="tuned")
+        self.assertGreater(moved, 20.0)
+        self.assertEqual(stats["let_go"], 0)
+        self.assertLess(over, 2.5)
+        back, _, stats = self.release_while_moving([], plant="tuned")
+        self.assertLess(back, 2.5)
+        self.assertEqual(stats["let_go"], 0)
 
     def test_accel_step(self):
         dt, vmax, amax = 1 / 30, 0.52, 0.45
@@ -355,7 +439,7 @@ class RealRosTrackingTests(unittest.TestCase):
         self.assertFalse(state["engaged"])
         np.testing.assert_allclose(state["q_cmd_late"], state["q_cmd"])  # no new commands while it exists
 
-    def release_while_moving(self, extra):
+    def release_while_moving(self, extra, plant=None):
         """Hand sweeps fast, the grip is let go mid-motion: (overshoot past the final rest, final rest - last command)."""
         hist, rel = [], {}
 
@@ -370,7 +454,7 @@ class RealRosTrackingTests(unittest.TestCase):
                 hist.append((t, arm.q_meas.copy()))
             if t > 1.6 and "cmd" not in rel and arm.q_cmd is not None:
                 rel["t"], rel["cmd"] = t, arm.q_cmd.copy()
-        stats, _ = self.session(extra, sweep, 6.0, probe=probe)
+        stats, _ = self.session(extra, sweep, 6.0, probe=probe, plant=plant)
         t = np.array([h[0] for h in hist])
         q = np.rad2deg(np.array([h[1] for h in hist]))
         after = q[t > rel["t"]]
@@ -381,9 +465,10 @@ class RealRosTrackingTests(unittest.TestCase):
         return come_back, float(rest[j] - after[0, j]), stats
 
     def test_release_brake_stops_without_coming_back(self):
-        back_on, travel_on, _ = self.release_while_moving([])
-        back_off, travel_off, _ = self.release_while_moving(["--no-release-brake"])
-        self.assertLess(back_on, 4.0)  # fake ReBeL: 2.7 deg with the brake, 9.5 without
+        # shown on the OLD controller; on the tuned one the arm comes back only ~4 deg even without it
+        back_on, travel_on, _ = self.release_while_moving([], plant="old")
+        back_off, travel_off, _ = self.release_while_moving(["--no-release-brake"], plant="old")
+        self.assertLess(back_on, 4.0)  # old fake ReBeL: 0.5-2.7 deg with the glide, 9.5 without
         self.assertGreater(back_off, back_on + 4.0)
 
     def test_x_button_switches_the_rotation_frame(self):

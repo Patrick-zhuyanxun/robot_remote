@@ -18,6 +18,21 @@ LEROBOT_PY = os.environ.get("LEROBOT_PY") or next(
     (str(p) for p in (ROOT / ".venv_record/bin/python", Path.home() / "Robotic_infra/lerobot/.venv/bin/python")
      if p.exists()), None)
 DOMAIN = 87
+
+
+def _can_resume(py):
+    """True if that LeRobot python has LeRobotDataset.resume (0.5.x); 0.4.x can only create new datasets."""
+    if not py:
+        return False
+    try:
+        v = subprocess.run([py, "-c", "from importlib.metadata import version; print(version('lerobot'))"],
+                           capture_output=True, text=True, timeout=20).stdout.strip()
+        return tuple(int(x) for x in v.split(".")[:2]) >= (0, 5)
+    except (OSError, subprocess.SubprocessError, ValueError):
+        return False
+
+
+CAN_RESUME = _can_resume(LEROBOT_PY)
 try:
     import rclpy
     from sensor_msgs.msg import JointState
@@ -143,6 +158,22 @@ class RealRecordingTest(unittest.TestCase):
                 self.assertAlmostEqual(got, want, places=5)
             videos = sorted(p.relative_to(root).parts[1] for p in root.glob("videos/*/*/*.mp4"))
             self.assertEqual(videos, ["observation.images.head", "observation.images.wrist_left"])
+            # encoded while recording (no PNG frames left), one video frame per data row, keyframe every 30 frames
+            self.assertEqual(list(root.glob("images/**/*.png")), [])
+            self.assertTrue(any("encoded while recording" in ln and "every 30 frames" in ln for ln in lines), lines)
+            vid = next(root.glob("videos/observation.images.head/*/*.mp4"))
+            out = subprocess.run([LEROBOT_PY, "-c", (
+                "import av, json, sys\n"
+                "c = av.open(sys.argv[1]); s = c.streams.video[0]\n"
+                "k = [i for i, p in enumerate(c.demux(s)) if p.size and p.is_keyframe]\n"
+                "print(json.dumps({'keys': k}))\n"), str(vid)], capture_output=True, text=True, check=True, timeout=60)
+            keys = json.loads(out.stdout.strip().splitlines()[-1])["keys"]
+            out = subprocess.run([LEROBOT_PY, "-c", (
+                "import av, sys\nprint(sum(1 for _ in av.open(sys.argv[1]).decode(video=0)))\n"), str(vid)],
+                capture_output=True, text=True, check=True, timeout=60)
+            n_video = int(out.stdout.strip().splitlines()[-1])
+            self.assertEqual(n_video, d["n"])
+            self.assertEqual(keys[:2], [0, 30], keys)
             self.assertFalse(any("frame skipped" in ln for ln in lines), "\n".join(lines))
             self.assertFalse(any("Traceback" in ln for ln in lines), "\n".join(lines))  # clean shutdown
 

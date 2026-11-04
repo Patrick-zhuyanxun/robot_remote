@@ -41,8 +41,10 @@ def setup(context):
     # which only match nodes in the root namespace: re-key them as /**/<name> so /left/... and /right/... match.
     ctrl = yaml.safe_load(ctrl_src.read_text())
     gains_name = LaunchConfiguration("gains").perform(context)
+    jog_scale = None  # None = the driver's xacro default (1.65 since Igus_rebel 287b0186; the old driver hard-coded 2.0)
     if proto == "rebel" and gains_name != "upstream":  # config/real_controller_gains.json, measured on the real arm
         g = json.loads((ROOT / "config" / "real_controller_gains.json").read_text())[gains_name]
+        jog_scale = g.get("jog_velocity_scale")  # the gains assume this jog % per deg/s; pinned with them
         jtc = ctrl["rebel_arm_trajectory_controller"]["ros__parameters"]
         for j in g.get("joints", jtc["joints"]):  # only the joints the preset was tested on (others: upstream)
             jtc["gains"][j].update(p=float(g["p"]), ff_velocity_scale=float(g["ff_velocity_scale"]))
@@ -53,7 +55,8 @@ def setup(context):
         ip = LaunchConfiguration(f"{side}_ip").perform(context) or ips[side]["host"]
         description = {"robot_description": ParameterValue(Command([
             FindExecutable(name="xacro"), " ", str(desc_pkg / "urdf" / "igus_rebel_xeg32_wrapper.urdf.xacro"),
-            " hardware_protocol:=", proto, " robot_ip:=", ip]), value_type=str)}
+            " hardware_protocol:=", proto, " robot_ip:=", ip,
+            *([f" jog_velocity_scale:={float(jog_scale)}"] if jog_scale is not None else [])]), value_type=str)}
         cm = f"/{side}/controller_manager"
         actions.append(GroupAction([
             PushRosNamespace(side),
@@ -66,7 +69,9 @@ def setup(context):
             Node(package="controller_manager", executable="spawner",
                  arguments=["rebel_arm_trajectory_controller", "--controller-manager", cm], output="both"),
         ]))
-        actions.append(LogInfo(msg=f"[driver] {side} arm: " + (f"robot {ip}:3920" if proto == "rebel" else proto)))
+        actions.append(LogInfo(msg=f"[driver] {side} arm: " + (f"robot {ip}:3920" if proto == "rebel" else proto)
+                               + (f", gains {gains_name}" + (f", jog_velocity_scale {jog_scale}" if jog_scale else "")
+                                  if proto == "rebel" else "")))
         if proto == "rebel" and enable:
             # The driver sends Reset + Enable when it connects, but that first attempt has not stuck on our arms;
             # re-send it once the driver is up (`ros2 service call` waits for the service, prints success=...).
@@ -87,7 +92,7 @@ def generate_launch_description():
         DeclareLaunchArgument("left_ip", default_value="", description="default: config/real_arms.json"),
         DeclareLaunchArgument("right_ip", default_value="", description="default: config/real_arms.json"),
         DeclareLaunchArgument("hardware_protocol", default_value="rebel", choices=["rebel", "mock_hardware"]),
-        DeclareLaunchArgument("gains", default_value="standard", choices=["standard", "responsive", "upstream"],
+        DeclareLaunchArgument("gains", default_value="tuned", choices=["tuned", "standard", "responsive", "upstream"],
                               description="JTC gains from config/real_controller_gains.json (upstream = controller.yaml)"),
         OpaqueFunction(function=setup),
     ])
