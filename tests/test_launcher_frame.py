@@ -58,6 +58,31 @@ class FrameButtonTests(unittest.TestCase):
                 app.destroy()
             self.assertIn("rotation frame", (Path(d) / "latest" / "teleop.log").read_text())  # newest-session copy
 
+    def test_rotation_input_choice_is_collected_saved_and_passed_to_the_teleop(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(gui, "CONFIG", Path(d) / "launcher.json"), \
+                patch.object(gui, "LOG_DIR", Path(d)):
+            app = gui.App()
+            app.withdraw()
+            try:
+                app.v_root.set(d)
+                app.update()
+                self.assertEqual(app.v_rot_input.get(), "hand + stick")  # default
+                self.assertEqual(app._collect()["rot_input"], "hand+stick")
+                app.v_rot_input.set("stick only")
+                cfg = app._collect()
+                self.assertEqual(cfg["rot_input"], "stick")
+                self.assertIn("rot_input", gui.DEFAULTS)  # kept in launcher.json for the next start
+                app.v_rot_input.set("hand only")
+                self.assertEqual(app._collect()["rot_input"], "hand")
+                # the legend shows the thumbstick and the whole legend still fits the window
+                texts = [app.legend.itemcget(i, "text") for i in app.legend.find_all() if app.legend.type(i) == "text"]
+                self.assertTrue(any("Thumbstick" in t for t in texts))
+                self.assertLess(int(app.legend.cget("height")), 900 - 80)  # the window is at most 900 high; title + padding
+            finally:
+                app.destroy()
+        src = Path(gui.__file__).read_text()
+        self.assertEqual(src.count('"--rot-input", cfg.get("rot_input"'), 2)  # sim and real teleop command lines
+
     def test_real_target_records_with_usb_cameras(self):
         with tempfile.TemporaryDirectory() as d, patch.object(gui, "CONFIG", Path(d) / "launcher.json"), \
                 patch.object(gui, "LOG_DIR", Path(d)):

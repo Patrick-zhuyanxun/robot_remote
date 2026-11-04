@@ -91,7 +91,7 @@ class RecordUnderLoadTest(unittest.TestCase):
             th = threading.Thread(target=publish, daemon=True)
             th.start()
             try:
-                for session in ("create", "resume"):
+                for session in (("create", "resume") if trr.CAN_RESUME else ("create",)):  # 0.4.x: no resume
                     lines = self.record_once(tmp, ev)
                     saving = next(ln for ln in lines if "saving episode" in ln)
                     self.assertEqual(any("resuming existing dataset" in ln for ln in lines), session == "resume")
@@ -99,7 +99,9 @@ class RecordUnderLoadTest(unittest.TestCase):
                     frames, stale = int(m.group(1)), int(m.group(3))
                     self.assertGreater(frames, 80, f"{session}: {saving}")  # ~3 s at 30 fps
                     self.assertLess(stale, 0.1 * frames, f"{session}: {saving}")
-                    self.assertNotIn("late ticks", saving, session)
+                    # streaming encoding: the 3 encoders start on the episode's first frame (~70 ms once, 2026-11-03)
+                    late = re.search(r"(\d+) late ticks", saving)
+                    self.assertLessEqual(int(late.group(1)) if late else 0, 3, f"{session}: {saving}")
             finally:
                 stop.set()
                 th.join()

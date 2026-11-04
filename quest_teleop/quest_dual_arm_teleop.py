@@ -16,6 +16,7 @@ Controls (per hand): hold SQUEEZE to move that arm, release to freeze it; TRIGGE
 
 --backend real connects both real ReBeLs directly over Ethernet (CRI + Position Interface).
 --backend real-ros preserves the older, single-arm ROS trajectory backend.
+--backend cri-jog drives one or both real arms through the controller's own Cartesian jog (no IK here): see cri_jog.py.
 Real backends use slower limits, start at the measured pose, and do not command grippers.
 """
 
@@ -43,6 +44,8 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 from quest_arm_teleop import ARM_JOINTS, HOME_DEG, TCP_PRESETS, QuestController, SerialChain, step_toward
 from ethernet_rebel import DEFAULT_CONFIG, EthernetArms, RobotError, load_endpoints, watch_arm
 from arm_collision import DEFAULT_CALIBRATION, capsules, clearance, load_world_T_base
+import stick_rotation  # thumbstick rotation of the tool while gripping (IK backends)
+import cri_jog  # --backend cri-jog (imports only numpy / rclpy / std ROS msgs; igus_rebel_msgs is loaded lazily)
 
 HERE = Path(__file__).resolve().parent
 # Per-tick trace of the newest run, overwritten every start (robot_remote/latest_run/, see Trace). The launcher also
@@ -71,11 +74,12 @@ ARM_BASE_YAW_DEG = -90.0
 # command (max_joint_acc, below the ReBeL's ~0.52 rad/s^2) and a 10 deg leash; without the acceleration limit those
 # speeds overshoot 9-20 deg (offline model of Igus_rebel controller.yaml's plant). The Ethernet backend keeps 0.35.
 REAL_DEFAULTS = {"max_joint_vel": 0.52, "max_lin_vel": 0.25, "max_rot_vel": 45.0, "max_cmd_lead_deg": 10.0,
-                 "max_joint_acc": 0.52, "max_joint_dec": 0.3, "glide_dec": 0.4}  # 0.52 = the ReBeL's identified limit; the launcher offers 0.45-0.8 to try
+                 "max_joint_acc": 0.52, "max_joint_dec": 0.3, "glide_dec": 0.4,
+                 "y_hold_s": 1.0}  # 0.52 = the ReBeL's identified limit; the launcher offers 0.45-0.8 to try
 ETHERNET_DEFAULTS = {"max_joint_vel": 0.35, "max_lin_vel": 0.15, "max_rot_vel": 30.0, "max_cmd_lead_deg": 0.0,
-                     "max_joint_acc": 0.0, "max_joint_dec": 0.0, "glide_dec": 0.0}
+                     "max_joint_acc": 0.0, "max_joint_dec": 0.0, "glide_dec": 0.0, "y_hold_s": 1.0}
 SIM_DEFAULTS = {"max_joint_vel": 0.785, "max_lin_vel": 0.50, "max_rot_vel": 90.0, "max_cmd_lead_deg": 0.0,
-                "max_joint_acc": 0.0, "max_joint_dec": 0.0, "glide_dec": 0.0}
+                "max_joint_acc": 0.0, "max_joint_dec": 0.0, "glide_dec": 0.0, "y_hold_s": 0.0}
 
 # OpenXR anchor frame is set by quest_arm_teleop.OPERATOR_T_ANCHOR: operator X fwd, Y left, Z up.
 
@@ -144,7 +148,7 @@ class Trace:
     Every log message of the teleop goes into the `note` column of the next row. Overwritten on every start."""
 
     J = range(1, 7)
-    COLS = (["t", "mode", "side", "tracked", "engaged", "grip", "trigger", "hand_x", "hand_y", "hand_z",
+    COLS = (["t", "mode", "side", "tracked", "engaged", "grip", "trigger", "stick_x", "stick_y", "hand_x", "hand_y", "hand_z",
              "target_x", "target_y", "target_z"] + [f"ik{i}" for i in J] + [f"cmd{i}" for i in J]
             + [f"meas{i}" for i in J] + ["meas_age_ms", "lag_deg", "cmd_speed_dps", "limited", "sent", "note"])
 
@@ -162,7 +166,7 @@ class Trace:
                      + (f"# limits: joint {getattr(args, 'max_joint_vel', '')} rad/s, accel {getattr(args, 'max_joint_acc', '')} "
                         f"rad/s^2, lead {getattr(args, 'max_cmd_lead_deg', '')} deg, TCP {getattr(args, 'max_lin_vel', '')} m/s, "
                         f"{getattr(args, 'max_rot_vel', '')} deg/s, rate {getattr(args, 'rate', '')} Hz\n" if args else "")
-                     + "# units: t [s since start], joints [deg], hand_* [m, Quest controller in the operator frame: x fwd, "
+                     + "# units: t [s since start], joints [deg], stick_x / stick_y = raw thumbstick of the driving hand [-1..1], hand_* [m, Quest controller in the operator frame: x fwd, "
                      "y left, z up], target_* [m, commanded flange in the arm base frame]; ik = IK solution, cmd = joint "
                      "command sent after the speed / acceleration / leash / collision limits (limited = which ones "
                      "changed it), meas = measured joints, lag_deg = max |cmd - meas|, sent = 1 if a command went out "
@@ -180,7 +184,7 @@ class Trace:
         self.last_note[text] = now
         self.notes.append(text)
 
-    def row(self, mode, side, tracked="", engaged="", grip="", trigger="", hand=None, target=None, ik=None,
+    def row(self, mode, side, tracked="", engaged="", grip="", trigger="", stick=None, hand=None, target=None, ik=None,
             cmd=None, meas=None, meas_age=None, cmd_speed=None, limited="", sent=""):
         if self.f is None:
             return
@@ -190,7 +194,7 @@ class Trace:
         b = lambda v: "" if v == "" else int(bool(v))  # noqa: E731
         self.w.writerow([f"{time.monotonic() - self.t0:.4f}", mode, side, b(tracked), b(engaged),
                          "" if grip == "" else f"{grip:.3f}", "" if trigger == "" else f"{trigger:.3f}",
-                         *f3(hand), *f3(target), *fd(ik), *fd(cmd), *fd(meas),
+                         *(["", ""] if stick is None else [f"{stick[0]:.3f}", f"{stick[1]:.3f}"]), *f3(hand), *f3(target), *fd(ik), *fd(cmd), *fd(meas),
                          "" if meas_age is None else f"{1000 * meas_age:.0f}", lag,
                          "" if cmd_speed is None else f"{cmd_speed:.2f}", limited, b(sent), " | ".join(self.notes)])
         self.notes = []
@@ -209,24 +213,47 @@ class TracingLog:
 
     def __init__(self, log, trace):
         self._log, self._trace = log, trace
+        self._last = {}  # (file, line) of the caller -> monotonic time it last logged (throttling)
 
     def __getattr__(self, name):
         return getattr(self._log, name)
 
+    def _throttled(self, kw):
+        """Throttle here, never in rclpy: every message passes through the ONE rclpy call site in this class, and
+        rclpy raises 'Requested logging filters cannot be changed between calls' when that call site is used once
+        without and once with throttle_duration_sec (it crashed the real teleop at the arm-guard warning)."""
+        period = kw.pop("throttle_duration_sec", None)
+        if period is None:
+            return False
+        f = sys._getframe(2)
+        key, now = (f.f_code.co_filename, f.f_lineno), time.monotonic()
+        if now - self._last.get(key, -1e18) < period:
+            return True
+        self._last[key] = now
+        return False
+
     def debug(self, msg, **kw):
-        return self._log.debug(msg, **kw)
+        if self._throttled(kw):
+            return False
+        return self._log.debug(msg)
 
     def info(self, msg, **kw):
+        if self._throttled(kw):
+            return False
         self._trace.note(msg)
-        return self._log.info(msg, **kw)
+        return self._log.info(msg)
 
     def warning(self, msg, **kw):
+        if self._throttled(kw):
+            return False
         self._trace.note(msg)
-        return self._log.warning(msg, **kw)
+        return self._log.warning(msg)
 
     def error(self, msg, **kw):
+        if self._throttled(kw):
+            return False
         self._trace.note(msg)
-        return self._log.error(msg, **kw)
+        return self._log.error(msg)
 
 
 def log_timing(log, line, bad):
@@ -281,6 +308,7 @@ class Arm:
         self.q_meas = None
         self.t_meas = 0.0  # monotonic time of the last joint state
         self.q_cmd = None
+        self.q_ik_last = None  # last IK solution while engaged (thumbstick wind-up guard)
         self.q_ik_tick, self.limited = None, []  # this tick's IK solution and the limits that changed it (trace)
         self.v_cmd = np.zeros(6)  # velocity of the last command (acceleration-limited real-ros command)
         self.v_meas = np.zeros(6)  # measured joint velocity, smoothed (real-ros)
@@ -676,8 +704,9 @@ class DualArmTeleop(Node):
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--backend", choices=["isaac", "real", "real-ros"], default="isaac",
-                   help="real = dual-arm Ethernet; real-ros = legacy single-arm ROS topics")
+    p.add_argument("--backend", choices=["isaac", "real", "real-ros", "cri-jog"], default="isaac",
+                   help="real = dual-arm Ethernet; real-ros = legacy single-arm ROS topics; cri-jog = one or both arms "
+                        "via the controller's own Cartesian jog (the controller does the IK; see cri_jog.py)")
     p.add_argument("--config", type=Path, default=DEFAULT_CONFIG, help="Ethernet endpoints JSON")
     p.add_argument("--left-ip", help="override left Ethernet IP")
     p.add_argument("--right-ip", help="override right Ethernet IP")
@@ -716,6 +745,10 @@ def parse_args(argv=None):
     p.add_argument("--no-release-brake", dest="release_brake", action="store_false",
                    help="real-ros: on release keep the last command (the arm overshoots it and is pulled back) instead "
                         "of letting the command glide to a stop")
+    p.add_argument("--y-hold-s", type=float, default=None,
+                   help="left controller Y (discard the open episode + reset; real robots: send the arms home) must be held "
+                        "this long [s] before it acts, so a brushed thumb does nothing. Default 1.0 on the real backends, "
+                        "0 (immediate) in the simulator. The launcher's reset button is always immediate.")
     p.add_argument("--stall-s", type=float, default=1.0,
                    help="real arm with the leash: let go when the arm has not moved 0.5 deg for this long while its "
                         "command is at the leash (motors off, e-stop, blocked) [s]")
@@ -752,6 +785,18 @@ def parse_args(argv=None):
                    help="tool: twisting the controller spins the tool about its own Z, nodding tilts it "
                         "(controller-local rotation applied in the tool frame); base: hand rotation applied "
                         "about the fixed base axes")
+    p.add_argument("--rot-input", choices=["hand+stick", "stick", "hand"], default="hand+stick",
+                   help="what rotates the tool while gripping: hand+stick (default), stick = orientation only from the "
+                        "thumbstick (the hand's rotation is ignored, translation still follows the hand), hand = the "
+                        "thumbstick does nothing")
+    p.add_argument("--stick-rot-vel", type=float, default=15.0,
+                   help="thumbstick rotation rate at full deflection [deg/s] (0 = off; never above --max-rot-vel)")
+    p.add_argument("--stick-deadzone", type=float, default=0.15, help="thumbstick dead zone (0..1); the curve is quadratic after it")
+    p.add_argument("--stick-x", choices=["spin", "yaw"], default="spin",
+                   help="thumbstick X: spin = rotate about the tool's own Z (right = the sense of twisting the hand right), "
+                        "yaw = rotate about the base vertical (right = aim right). Thumbstick Y always tilts the tool up / down")
+    p.add_argument("--stick-signs", type=float, nargs=2, default=(1.0, 1.0), metavar=("SX", "SY"),
+                   help="flip a thumbstick axis with -1 (default 1 1)")
     p.add_argument("--ctrl-twist-axis", type=float, nargs=3, default=(0.0, -0.707, -0.707), metavar=("X", "Y", "Z"),
                    help="Quest handle long axis in the controller (OpenXR grip) frame; measured from your "
                         "twists as about (-0.16, -0.73, -0.66)")
@@ -782,13 +827,21 @@ def parse_args(argv=None):
                    help="per-tick CSV of hand / IK / command / measured joints, overwritten every run ('' = off)")
     p.add_argument("--diag-period", type=float, default=5.0,
                    help="seconds between [timing] lines (loop rate, Quest / IK time, joint-state age, sim speed)")
+    cri_jog.add_arguments(p)
     args, ros_args = p.parse_known_args(argv)
-    for k, v in {"isaac": SIM_DEFAULTS, "real": ETHERNET_DEFAULTS, "real-ros": REAL_DEFAULTS}[args.backend].items():
+    for k, v in {"isaac": SIM_DEFAULTS, "real": ETHERNET_DEFAULTS, "real-ros": REAL_DEFAULTS,
+                 "cri-jog": REAL_DEFAULTS}[args.backend].items():
         if getattr(args, k) is None:
             setattr(args, k, v)
     if len(set(args.arms)) != len(args.arms):
         p.error("--arms must not contain duplicates")
-    for key in ("max_joint_acc", "max_joint_dec", "glide_dec", "max_cmd_lead_deg"):
+    if not np.isfinite(args.stick_rot_vel) or args.stick_rot_vel < 0:
+        p.error("--stick-rot-vel must be finite and >= 0")
+    if not np.isfinite(args.stick_deadzone) or not 0 <= args.stick_deadzone < 1:
+        p.error("--stick-deadzone must be in [0, 1)")
+    if not np.all(np.isfinite(args.stick_signs)):
+        p.error("--stick-signs must be finite")
+    for key in ("max_joint_acc", "max_joint_dec", "glide_dec", "max_cmd_lead_deg", "y_hold_s"):
         if not np.isfinite(getattr(args, key)) or getattr(args, key) < 0:
             p.error(f"--{key.replace('_', '-')} must be finite and >= 0")
     for key in ("rate", "state_timeout", "command_timeout", "max_joint_vel", "max_lin_vel", "max_rot_vel",
@@ -804,6 +857,7 @@ def parse_args(argv=None):
                                        or args.command_timeout > .5):
             p.error("Ethernet requires rate >= 10 and 2/rate <= command-timeout <= 0.5 s")
         args.no_home = not args.real_home  # the real arm moves on its own only when asked to
+    cri_jog.validate(args, p)
     return args, ros_args
 
 
@@ -812,6 +866,14 @@ def main():
     rclpy.init(args=ros_args)
     # rclpy only flags SIGTERM (rclpy.ok() -> False) and keeps running; during start-up make it abort instead.
     signal.signal(signal.SIGTERM, signal.default_int_handler)
+    if args.backend == "cri-jog":  # the controller does the IK: no URDF, no chain, no home / park motion
+        try:
+            cri_jog.run(args, HERE / "cloudxr_quest3.env")
+        except cri_jog.CriJogError:
+            sys.exit(2)  # the reason was logged
+        finally:
+            rclpy.try_shutdown()
+        return
     tcp = tuple(args.tcp) if args.tcp else TCP_PRESETS[args.tcp_preset]
     chain = SerialChain(make_urdf(), "base_link", "link6", ARM_JOINTS, tcp_xyz=tcp)
     node = DualArmTeleop(args, chain)
@@ -1047,6 +1109,9 @@ def run_session(node, chain, args):
     right_base = r_base_op.apply([0.0, -1.0, 0.0])  # operator 'right' in the arm base frame
     log.info(f"rotation frame: {node.rot_frame}" + (
         f" (controller twist axis {np.round(args.ctrl_twist_axis, 2).tolist()} -> tool Z)" if node.rot_frame == "tool" else ""))
+    stick_rate = 0.0 if args.rot_input == "hand" else min(args.stick_rot_vel, args.max_rot_vel)
+    log.info(f"thumbstick rotation: {stick_rate:g} deg/s full stick (X = {args.stick_x}, Y = tilt), "
+             f"rotation input {args.rot_input}")
     dt = 1.0 / args.rate
     # Ethernet: stay 10 % under the transport's per-tick limit, so encoder noise between the engage snapshot and
     # the first streamed target can never trip it (that check would stop both arms).
@@ -1059,6 +1124,9 @@ def run_session(node, chain, args):
         arm.need_regrip = node.real
     both = len(node.arms) == 2
     last_buttons = {}
+    # Y (left) must be held --y-hold-s on the real robot before it resets (0 = on the rising edge, the simulator)
+    y_hold = cri_jog.YHold(args.y_hold_s, log, "discard the episode and send the arms home" if node.real
+                           else "reset the scene", clutch=args.clutch)
     # Ctrl+C / SIGTERM (GUI Stop all) only request a stop; the loop ends at a tick boundary, never in the
     # middle of a robot command, so the exit path can still return the arms to the park pose.
     stop = {"requested": False}
@@ -1074,6 +1142,7 @@ def run_session(node, chain, args):
             for _ in range(3):  # one spin_once handled a joint state only every other tick (15 Hz); 3 -> every tick
                 rclpy.spin_once(node, timeout_sec=0.0)
             readings = xr.read_all()
+            sticks = getattr(xr, "sticks", {})  # fake Quests without thumbsticks: none
             t_xr = time.perf_counter()
             node.update_ethernet()
             cand, grips = {}, {}
@@ -1140,6 +1209,7 @@ def run_session(node, chain, args):
                     arm.gliding = False
                     arm.v_cmd = np.zeros(6)
                     arm.stall_ref = None
+                    arm.q_ik_last = arm.q_meas.copy()
                     log.info(f"[{side}] engaged ({arm.rot_frame}-frame rotation)")
                 elif squeeze < off_th and arm.engaged:
                     arm.engaged = False
@@ -1152,6 +1222,26 @@ def run_session(node, chain, args):
                         p_des = arm.shoulder + d * (arm.reach / np.linalg.norm(d))
                     arm.r_delta = r_b * arm.origin_r.inv()  # hand rotation since engage, in arm base axes
                     arm.raw_quat = quat
+                    # What the commanded joints reach now (anti-windup below, and the thumbstick wind-up guard).
+                    t_ach = chain.fk(arm.q_cmd)
+                    r_ach = Rotation.from_matrix(t_ach[:3, :3])
+                    # Thumbstick: turn the engage reference orientation (so it works in both rotation frames and in
+                    # every --rot-input mode). Only while the wrist can realise the commanded orientation (the
+                    # previous tick's IK solution; at a joint limit it cannot): otherwise the target would run away
+                    # and the tool would keep turning after the stick is let go. The IK solution, not the shaped
+                    # joint command: the acceleration / braking limits of the real-ros command make that one lag the
+                    # target by v^2 / (2 a_dec) (~5 deg at 15 deg/s) in normal use.
+                    if stick_rate > 0:
+                        w = stick_rotation.omega(sticks.get(hand_of[side], (0.0, 0.0)), arm.cmd_r.apply([0.0, 0.0, 1.0]),
+                                                 right_base, args.stick_x, args.stick_signs, args.stick_deadzone,
+                                                 stick_rate, args.max_rot_vel)
+                        if np.any(w):
+                            r_ik = Rotation.from_matrix(chain.fk(arm.q_ik_last)[:3, :3])
+                            if (arm.cmd_r * r_ik.inv()).magnitude() < np.deg2rad(stick_rotation.STICK_MAX_LEAD_DEG):
+                                arm.home_r = Rotation.from_rotvec(w * dt) * arm.home_r
+                            else:
+                                log.warning(f"[{side}] stick rotation held - wrist cannot follow (joint limit?)",
+                                            throttle_duration_sec=2.0)
                     if arm.rot_frame == "tool":
                         # rotation of the controller about its OWN axes since engage, re-expressed on the
                         # tool's own axes and applied on the tool side (right-multiplied)
@@ -1159,6 +1249,8 @@ def run_session(node, chain, args):
                         r_des = arm.home_r * (arm.m_tool_ctrl * arm.d_local * arm.m_tool_ctrl.inv())
                     else:
                         r_des = arm.r_delta * arm.home_r
+                    if args.rot_input == "stick":
+                        r_des = arm.home_r  # orientation only from the thumbstick: the hand's rotation never enters
                     # Cartesian rate limit: move the commanded pose toward the hand pose at <= v / w, so a
                     # fast or large hand rotation is followed along a smooth Cartesian path instead of the
                     # joint-space shortcut (which made the TCP swing 10-18 cm during 60-90 deg wrist turns).
@@ -1176,8 +1268,6 @@ def run_session(node, chain, args):
                     # Anti-windup: keep the command within --max-lead-* of what the commanded joints reach.
                     # When the hand asks for more than the wrist can do (e.g. 130 deg roll, pitch past joint5),
                     # the IK otherwise chases a far-away configuration and the TCP swings on the way.
-                    t_ach = chain.fk(arm.q_cmd)
-                    r_ach = Rotation.from_matrix(t_ach[:3, :3])
                     e_r = (arm.cmd_r * r_ach.inv()).as_rotvec()
                     m = np.linalg.norm(e_r)
                     lead_r = np.deg2rad(args.max_lead_deg)
@@ -1206,7 +1296,7 @@ def run_session(node, chain, args):
                         if not np.allclose(leashed, cand[side], atol=1e-9):
                             arm.limited.append("leash")
                         cand[side] = leashed
-                    arm.q_ik_tick = q_ik
+                    arm.q_ik_tick = arm.q_ik_last = q_ik
                     arm.p_des = p_des
                     ps = PoseStamped()
                     ps.header.frame_id, ps.header.stamp = f"{side}/base_link", node.get_clock().now().to_msg()
@@ -1277,7 +1367,8 @@ def run_session(node, chain, args):
             node.send(cand, grips)
             for side, arm in node.arms.items():
                 tr, pos, _, squeeze, trigger = readings[hand_of[side]]
-                node.trace.row("teleop", side, tr, arm.engaged, squeeze, trigger, hand=pos if tr else None,
+                node.trace.row("teleop", side, tr, arm.engaged, squeeze, trigger,
+                               stick=stick_rotation.clean(sticks.get(hand_of[side])) if tr else None, hand=pos if tr else None,
                                target=arm.cmd_p if arm.engaged else None, ik=arm.q_ik_tick, cmd=arm.q_cmd,
                                meas=arm.q_meas, meas_age=time.monotonic() - arm.t_meas,
                                cmd_speed=float(np.rad2deg(np.max(np.abs(arm.v_cmd)))), limited="+".join(arm.limited),
@@ -1286,23 +1377,26 @@ def run_session(node, chain, args):
             node.publish_viz(readings, hand_of)
             # controller buttons (rising edges): A (right) = start/save (toggle), B (right) = discard,
             # X (left) = switch the rotation frame tool <-> base (applies at the next grip), Y (left) = reset the scene
+            # (real robot: only after Y has been held --y-hold-s, see cri_jog.YHold)
             for h, (prim, sec) in xr.buttons.items():
                 was_p, was_s = last_buttons.get(h, (False, False))
                 for pressed, was, ev in ((prim, was_p, "frame" if h == "left" else "toggle"),
                                          (sec, was_s, "reset" if h == "left" else "discard")):
-                    if pressed and not was:
+                    if pressed and not was and ev != "reset":
                         log.info(f"[{h} hand] button -> {ev}")
-                        if ev == "reset":
-                            node.reset_requested = True
-                        elif ev == "frame":
+                        if ev == "frame":
                             node.set_rot_frame("base" if node.rot_frame == "tool" else "tool")
                         else:
                             node.event_pub.publish(String(data=ev))
                 last_buttons[h] = (prim, sec)
+            if y_hold.update(xr.buttons, readings, time.monotonic()):
+                log.info("[left hand] button -> reset")
+                node.reset_requested = True
             if node.reset_requested:
                 node.reset_requested = False
                 reset_scene(node, args, log, xr, stop)
                 last_buttons.update(xr.buttons)  # a button that stopped the reset move must not also act here
+                y_hold.resync(xr.buttons, readings)      # a Y still held after the reset must be released before it counts again
                 continue
             t_pub = time.perf_counter()
 

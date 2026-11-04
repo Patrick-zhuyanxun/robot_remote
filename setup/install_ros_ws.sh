@@ -8,8 +8,8 @@ set -eo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WS="$HERE/../igus_ws"
 IGUS_REBEL_URL=https://github.com/fani8j/Igus_rebel.git
-IGUS_REBEL_BRANCH=hcut-path-consistency
-IGUS_REBEL_COMMIT=cc0e2b61eaa34f35d75e1ff9aeb2d2bf3081c6b5
+IGUS_REBEL_BRANCH=fani8j/jtc-tracking
+IGUS_REBEL_COMMIT=287b0186129752ea1ea1e4b526eaa96182c6d8d4  # 2026-11-03: jog_velocity_scale 1.65 + JTC p3/ff0.6 (was cc0e2b6 on hcut-path-consistency)
 IRC_URL=https://github.com/CommonplaceRobotics/iRC_ROS.git
 IRC_COMMIT=41701e6df3398087d217f0f478622e60f694de41
 

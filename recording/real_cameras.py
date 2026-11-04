@@ -16,6 +16,11 @@ recorder starts (never /dev/videoN: it renumbers on every replug):
 Each camera runs a reader thread that keeps only the newest decoded frame and its capture time (time.monotonic()).
 A camera that stops producing frames is reported stale by latest(), never blocks the caller.
 
+A camera that drops off USB (the ARC wrist cameras do, and re-enumerate within ~1 s, usually as another /dev/videoN)
+is not given up: its thread keeps retrying about every 0.5 s - it resolves the SAME camera again (same sysfs identity,
+resolve_device) and reopens it with the same format / size / fps. state is "ok" while frames flow and "lost" from the
+loss until the first frame after the reconnect; each transition is logged once.
+
   recording/run_cameras.sh --list                    # every V4L2 colour node with its stable paths
   recording/run_cameras.sh --snapshot [--all]        # one JPEG per configured camera (--all: + unconfigured nodes)
   recording/run_cameras.sh --test 10                 # all configured cameras together for 10 s: fps / gaps
@@ -86,9 +91,19 @@ def load_config(path=CONFIG) -> dict:
 class RealCamera:
     """One V4L2 camera: open, configure, read continuously in a thread; latest() returns (rgb, capture_time)."""
 
+    RETRY_S = 0.5      # how often a lost camera is looked for again
+    MAX_FAILS = 20     # consecutive failed reads (~0.2 s) that mean the camera is gone
+
     def __init__(self, key, device, width=640, height=480, fps=30, fourcc="MJPG", decode_fps=None, rotate=0,
-                 open_timeout=5.0):
+                 open_timeout=5.0, resolver=None):
+        """resolver: callable returning the device node of THIS camera again after it was lost (it may have
+        re-enumerated as another /dev/videoN); raises ConnectionError while it is not there. None = same node."""
         self.key, self.device = key, str(device)
+        self.resolver = resolver
+        self.state = "ok"          # "ok" | "lost" (lost / reconnecting: no fresh frames)
+        self.lost_since = None     # time.monotonic() of the loss
+        self.reconnects = 0
+        self.is_file = not self.device.startswith("/dev/")
         self.width, self.height, self.fps, self.fourcc = int(width), int(height), float(fps), fourcc
         # decode at most this often (grab() still drains every frame so the buffer never ages); None = every frame
         self.decode_period = 0.0 if not decode_fps else 1.0 / float(decode_fps)
@@ -106,7 +121,8 @@ class RealCamera:
     def __repr__(self):
         return f"RealCamera({self.key}: {self.device})"
 
-    def open(self):
+    def _open_cap(self):
+        """Open + configure self.device; returns the cv2.VideoCapture (ConnectionError / RuntimeError otherwise)."""
         if not os.path.exists(self.device):
             raise ConnectionError(f"{self.key}: {self.device} does not exist (unplugged or moved to another USB port? "
                                   "run recording/run_cameras.sh --list)")
@@ -130,7 +146,10 @@ class RealCamera:
             raise RuntimeError(f"{self.key}: {self.device} gave {got} {w}x{h}, wanted {self.fourcc} "
                                f"{self.width}x{self.height} (see v4l2-ctl -d {self.device} --list-formats-ext)")
         self.actual_fps = cap.get(cv2.CAP_PROP_FPS)
-        self._cap = cap
+        return cap
+
+    def open(self):
+        self._cap = self._open_cap()
         self._thread = threading.Thread(target=self._loop, name=f"cam_{self.key}", daemon=True)
         self._thread.start()
         t0 = time.monotonic()
@@ -147,19 +166,52 @@ class RealCamera:
         return self
 
     def _loop(self):
+        """Read forever; when the camera is lost keep retrying to find and reopen the same camera."""
+        while not self._stop.is_set():
+            if self._cap is None and not self._reconnect():
+                continue
+            reason = self._read()
+            if reason is None:  # stopped
+                return
+            self._cap.release()
+            self._cap = None
+            self.error = reason
+            if self.state == "ok":
+                self.state, self.lost_since = "lost", time.monotonic()
+                print(f"[cam] {self.key} lost ({reason.split(' (')[0]}) - retrying", flush=True)
+
+    def _reconnect(self) -> bool:
+        """One attempt (after RETRY_S) to find the same camera again and reopen it. True = self._cap is open."""
+        if self._stop.wait(self.RETRY_S):
+            return False
+        try:
+            if self.resolver is not None:
+                self.device = str(self.resolver())
+            cap = self._open_cap()
+        except (ConnectionError, RuntimeError, OSError, ValueError):
+            return False
+        if self._stop.is_set():
+            cap.release()
+            return False
+        self._cap = cap
+        return True
+
+    def _read(self):
+        """Grab / decode until stopped (None) or the camera is gone (reason string)."""
         last_decode = 0.0
         fails = 0
         while not self._stop.is_set():
             if self.is_file:
                 time.sleep(1.0 / self.fps)
+                if not os.path.exists(self.device):  # file removed = device unplugged
+                    return "device disappeared (camera disconnected?)"
             if not self._cap.grab():
                 if self.is_file:
                     self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
                     continue
                 fails += 1
-                if fails > 20:
-                    self.error = "read failures (camera disconnected?)"
-                    return
+                if fails > self.MAX_FAILS or not os.path.exists(self.device):
+                    return "read failures (camera disconnected?)"
                 time.sleep(0.01)
                 continue
             fails = 0
@@ -176,6 +228,12 @@ class RealCamera:
             with self._lock:
                 self._frame, self._t = rgb, t
                 self.frames += 1
+            if self.state != "ok" or self.error:
+                lost_s = time.monotonic() - (self.lost_since or t)
+                self.state, self.lost_since, self.error = "ok", None, None
+                self.reconnects += 1
+                print(f"[cam] {self.key} reconnected at {self.device} (was lost {lost_s:.1f} s)", flush=True)
+        return None
 
     def latest(self):
         """(rgb uint8 HxWx3, capture time.monotonic()) of the newest frame, or (None, None) before the first one."""
@@ -184,6 +242,15 @@ class RealCamera:
 
     def alive(self):
         return self._thread is not None and self._thread.is_alive()
+
+    def healthy(self) -> bool:
+        """Thread running and the camera delivering (False while lost / reconnecting)."""
+        return self.alive() and self.state == "ok"
+
+    def age(self, now=None) -> float:
+        """Seconds since the newest frame was captured (inf before the first one)."""
+        t = self.latest()[1]
+        return float("inf") if t is None else (time.monotonic() if now is None else now) - t
 
     def close(self):
         self._stop.set()
@@ -205,7 +272,8 @@ def open_cameras(keys, config=None) -> dict:
         for k in keys:
             c = config[k]
             cams[k] = RealCamera(k, resolve_device(c), c.get("width", 640), c.get("height", 480), c.get("fps", 30),
-                                 c.get("fourcc", "MJPG"), c.get("decode_fps"), c.get("rotate", 0)).open()
+                                 c.get("fourcc", "MJPG"), c.get("decode_fps"), c.get("rotate", 0),
+                                 resolver=lambda c=c: resolve_device(c)).open()
     except Exception:
         for cam in cams.values():
             cam.close()

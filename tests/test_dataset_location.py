@@ -177,9 +177,14 @@ class RecorderLocationTests(unittest.TestCase):
         code, lines = self.record(root, "ds")  # new
         self.assertEqual(code, 0, "\n".join(lines))
         code, lines = self.record(root, "ds")  # continue the same dataset
-        self.assertEqual(code, 0, "\n".join(lines))
-        self.assertTrue(any("resuming existing dataset" in ln and "(1 episodes)" in ln for ln in lines), lines)
-        self.assertEqual(self.episodes(root / "ds"), 2)
+        if trr.CAN_RESUME:
+            self.assertEqual(code, 0, "\n".join(lines))
+            self.assertTrue(any("resuming existing dataset" in ln and "(1 episodes)" in ln for ln in lines), lines)
+            self.assertEqual(self.episodes(root / "ds"), 2)
+        else:  # LeRobot 0.4.x (system python3 fallback): refused before anything is written
+            self.assertNotEqual(code, 0)
+            self.assertTrue(any("has no LeRobotDataset.resume" in ln for ln in lines), lines)
+            self.assertEqual(self.episodes(root / "ds"), 1)
 
         (root / "empty").mkdir()  # an empty folder made with "New folder"
         code, lines = self.record(root, "empty")
@@ -200,8 +205,9 @@ class RecorderLocationTests(unittest.TestCase):
 
         code, lines = self.record(root, "ds", fps=30)  # incompatible: refused, dataset untouched
         self.assertNotEqual(code, 0)
-        self.assertTrue(any("CANNOT be continued" in ln or "different setup" in ln for ln in lines), lines)
-        self.assertEqual(self.episodes(root / "ds"), 2)
+        self.assertTrue(any("CANNOT be continued" in ln or "different setup" in ln or "has no LeRobotDataset.resume" in ln
+                            for ln in lines), lines)
+        self.assertEqual(self.episodes(root / "ds"), 2 if trr.CAN_RESUME else 1)
 
 
 try:
@@ -215,7 +221,8 @@ except ImportError:  # pragma: no cover
 class LauncherLocationTests(unittest.TestCase):
     def test_default_hint_start_check_and_browse(self):
         self.assertEqual(Path(gui.DEFAULTS["root"]), ROOT / "dataset")
-        with tempfile.TemporaryDirectory() as d, patch.object(gui, "CONFIG", Path(d) / "launcher.json"):
+        with tempfile.TemporaryDirectory() as d, patch.object(gui, "CONFIG", Path(d) / "launcher.json"), \
+                patch.object(gui, "_APPEND_CHECK", [None]):  # a recorder that can append (LeRobot 0.5.x)
             d = Path(d)
             gui.CONFIG.write_text(json.dumps({"root": str(ROOT)}))  # old setting: the project folder itself
             app = gui.App()
@@ -241,6 +248,12 @@ class LauncherLocationTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     app._collect()
                 app.v_fps.set("30")
+                with patch.object(gui, "_APPEND_CHECK", ["this PC's recorder (python3, LeRobot 0.4.4) cannot append"]):
+                    app.v_name.set("ds")
+                    app._update_path_hint()
+                    self.assertIn("cannot append", app.v_path_hint.cget("text"))
+                    with self.assertRaises(ValueError):
+                        app._collect()  # a 0.4.x recorder: Start is blocked before anything starts
                 (d / "photos").mkdir()
                 (d / "photos/a.jpg").write_bytes(b"x")
                 app.v_name.set("photos")
